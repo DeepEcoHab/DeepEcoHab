@@ -32,6 +32,77 @@ BY_COHORT = {"color_by": available_attributes}
 PHASE_TYPE = {"phase_type": lambda context: list(context.phases)}
 BY_COHORT_AND_PHASE = {**BY_COHORT, **PHASE_TYPE}
 
+
+@PlotRegistry.register(
+	"animal-speed",
+	title="Tunnel-crossing speed",
+	info=(
+		"Median crossing speed per animal and day or phase, pooled into one box per tunnel. "
+		"Speed uses the configured tunnel distance. Both directions count; only positive "
+		"durations up to Max dwell (seconds) contribute."
+	),
+	requires=("main_df",),
+	dynamic_choices=PHASE_TYPE,
+)
+def animal_speed(
+	context: PlotContext,
+	*,
+	days_range: tuple[int, int] | None = None,
+	granularity: Granularity = "day",
+	phase_type: Sequence[str] = PHASES,
+	hours_range: tuple[int, int] | None = None,
+	max_dwell: float = 10,
+) -> go.Figure:
+	"""Per-tunnel distributions of each animal's daily or per-phase median speed."""
+	frame = prepare.prep_speed_box(
+		context,
+		_window(context, days_range, granularity),
+		phase_type,
+		granularity,
+		hours_range,
+		max_dwell,
+	)
+	return plot_factory.plot_animal_speed(
+		frame, context.tunnels, sample_palette(len(context.tunnels)), granularity
+	)
+
+
+@PlotRegistry.register(
+	"animal-speed-daily",
+	title="Mean tunnel-crossing speed",
+	info=(
+		"Crossing speeds averaged per animal, day or phase, and hour, then averaged over "
+		"the axis folded away. The band shows SEM across observed cells; empty cells stay "
+		"null. Speed uses configured tunnel distances and the Max dwell cutoff in seconds."
+	),
+	requires=("main_df", "animals"),
+	dynamic_choices=BY_COHORT_AND_PHASE,
+)
+def animal_speed_daily(
+	context: PlotContext,
+	*,
+	days_range: tuple[int, int] | None = None,
+	granularity: Granularity = "day",
+	phase_type: Sequence[str] = PHASES,
+	color_by: str = "animal_id",
+	label_by: LabelBy = "animal_id",
+	hours_range: tuple[int, int] | None = None,
+	timescale: Literal["days", "hours"] = "hours",
+	max_dwell: float = 10,
+	group_mean: bool = False,
+) -> go.Figure:
+	"""Mean tunnel-crossing speed with SEM, by hour or by day/phase."""
+	window = _window(context, days_range, granularity)
+	x = granularity if timescale == "days" else "hour"
+	frame = prepare.prep_speed_line(
+		context, window, phase_type, granularity, x, hours_range, max_dwell
+	)
+	spans = prepare.prep_event_spans(context, window, granularity, x, hours_range)
+	mapping = resolve_colors(context, color_by, group_mean=group_mean, label_by=label_by)
+	frame = mean_by_group(frame, mapping, ["mean"])
+	return plot_factory.plot_mean_line(frame, mapping, "speed", x, context.phases, spans)
+
+
 #: The count-line builder each aggregation draws with.
 LINE_BY_AGG = {
 	"sum": plot_factory.plot_sum_line,

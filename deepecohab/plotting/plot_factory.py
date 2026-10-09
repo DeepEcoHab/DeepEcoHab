@@ -23,6 +23,36 @@ from deepecohab.plotting.theme import (
 )
 
 
+def plot_animal_speed(
+	frame: pl.DataFrame,
+	positions: list[str],
+	colors: list[str],
+	granularity: str,
+) -> go.Figure:
+	"""One box per tunnel, pooling animal/day-or-phase median speeds."""
+	figure = px.box(
+		frame,
+		x="position",
+		y="speed_cm_s",
+		color="position",
+		color_discrete_map=dict(zip(positions, colors, strict=True)),
+		category_orders={"position": positions},
+		hover_data=["animal_id", granularity],
+		points="outliers",
+		labels={"speed_cm_s": "Median speed [cm/s]", "position": "Tunnel"},
+	)
+	figure.update_traces(boxmean=True)
+	figure.update_layout(
+		title="<b>Tunnel-crossing speed</b>",
+		colorway=colors,
+		legend={"title": "<b>Tunnel</b>"},
+		xaxis_title="<b>Tunnels</b>",
+		yaxis_title="<b>Median speed [cm/s]</b>",
+	)
+	figure.update_xaxes(tickvals=positions, ticktext=_tick_labels(positions))
+	return figure
+
+
 def _tick_labels(names: list[str]) -> list[str]:
 	"""Turn snake_case position names into axis tick text."""
 	return [name.capitalize().replace("_", " ") for name in names]
@@ -441,6 +471,7 @@ def plot_time_alone(
 _LINE_LABELS: dict[str, tuple[str, str, str]] = {
 	"activity": ("<b>Activity over time</b>", "<b>Antenna detections</b>", "Detections"),
 	"chasings": ("<b>Chasing over time</b>", "<b># of chasing events</b>", "Events"),
+	"speed": ("<b>Mean tunnel-crossing speed</b>", "<b>Mean speed [cm/s]</b>", "Speed [cm/s]"),
 }
 
 #: Hover label and axis title of each axis a count line plot can run along.
@@ -597,12 +628,12 @@ def plot_sum_line(
 def plot_mean_line(
 	frame: pl.DataFrame,
 	mapping: ColorMapping,
-	input_type: Literal["activity", "chasings"],
+	input_type: Literal["activity", "chasings", "speed"],
 	x: Literal["hour", "day", "phase_count"],
 	phases: dict[str, float],
 	spans: pl.DataFrame,
 ) -> go.Figure:
-	"""Plots means for activity or chasings with SEM shading, per hour or per window unit."""
+	"""Plots means with SEM shading, per hour or per window unit."""
 	title, y_axes_label, hover_label = _LINE_LABELS[input_type]
 	x_label = _LINE_X[x][0]
 

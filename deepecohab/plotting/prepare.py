@@ -15,6 +15,107 @@ from deepecohab.plotting.context import Granularity, PlotContext, Scope
 Aggregation = Literal["sum", "mean"]
 
 
+def prep_animal_speed(
+	context: PlotContext,
+	days_range: tuple[int, int],
+	phase_type: Sequence[str],
+	granularity: Granularity = "day",
+	hours_range: tuple[int, int] | None = None,
+	max_dwell: float = 10,
+) -> pl.DataFrame:
+	"""Crossing speeds using each tunnel's configured distance and a duration cutoff.
+
+	Retain fractional seconds from the pipeline's Duration column. Both tunnel
+	directions count; cage visits and undefined positions never contribute.
+	"""
+	if not math.isfinite(max_dwell) or max_dwell <= 0:
+		raise ValueError("max_dwell must be a positive, finite number of seconds")
+	for tunnel in set(context.tunnels_map.values()):
+		length = context.tunnel_lengths_cm.get(tunnel)
+		if length is None or not math.isfinite(length) or length <= 0:
+			raise ValueError(f"Tunnel {tunnel!r} needs a positive, finite crossing length in cm")
+	return (
+		context.table("main_df")
+		.lazy()
+		.filter(
+			window_filter(days_range, granularity, hours_range),
+			pl.col("phase").is_in(phase_type),
+			pl.col("position").is_in(list(context.tunnels_map)),
+		)
+		.with_columns(
+			pl.col("time_spent").dt.total_seconds(fractional=True),
+			pl.col("position").cast(pl.String).replace_strict(context.tunnels_map),
+		)
+		.filter(pl.col("time_spent").is_between(0, max_dwell, closed="right"))
+		.with_columns(
+			(
+				pl.col("position").replace_strict(
+					context.tunnel_lengths_cm, return_dtype=pl.Float64
+				)
+				/ pl.col("time_spent")
+			).alias("speed_cm_s"),
+		)
+		.sort("animal_id", "speed_cm_s")
+		.collect(engine="in-memory")
+	)
+
+
+def prep_speed_box(
+	context: PlotContext,
+	days_range: tuple[int, int],
+	phase_type: Sequence[str],
+	granularity: Granularity,
+	hours_range: tuple[int, int] | None = None,
+	max_dwell: float = 10,
+) -> pl.DataFrame:
+	"""One median crossing speed per animal, tunnel and day or phase."""
+	return (
+		prep_animal_speed(context, days_range, phase_type, granularity, hours_range, max_dwell)
+		.group_by("position", "animal_id", granularity)
+		.agg(pl.median("speed_cm_s"))
+		.sort("position", "animal_id", granularity)
+	)
+
+
+def prep_speed_line(
+	context: PlotContext,
+	days_range: tuple[int, int],
+	phase_type: Sequence[str],
+	granularity: Granularity,
+	x: Literal["hour", "day", "phase_count"],
+	hours_range: tuple[int, int] | None = None,
+	max_dwell: float = 10,
+) -> pl.DataFrame:
+	"""Mean hourly crossing speeds, with SEM over the axis folded away.
+
+	Each observed animal/day-or-phase/hour cell contributes one mean, regardless
+	of crossing count. Empty cells remain null and never count as zero speed.
+	"""
+	frame = prep_animal_speed(context, days_range, phase_type, granularity, hours_range, max_dwell)
+	hours = range(24) if hours_range is None else range(hours_range[0], hours_range[1] + 1)
+	bins = hours if x == "hour" else range(days_range[0], days_range[1] + 1)
+	scaffold = pl.DataFrame(
+		product(context.animal_ids, bins),
+		schema={"animal_id": frame.schema["animal_id"], x: frame.schema[x]},
+		orient="row",
+	)
+	return (
+		frame.group_by("animal_id", granularity, "hour")
+		.agg(pl.mean("speed_cm_s"))
+		.group_by("animal_id", x)
+		.agg(
+			pl.mean("speed_cm_s").alias("mean"),
+			(pl.std("speed_cm_s") / pl.col("speed_cm_s").count().sqrt()).alias("sem"),
+		)
+		.with_columns(
+			(pl.col("mean") - pl.col("sem")).alias("lower"),
+			(pl.col("mean") + pl.col("sem")).alias("upper"),
+		)
+		.join(scaffold, on=["animal_id", x], how="right")
+		.sort("animal_id", x)
+	)
+
+
 @dataclass(frozen=True, eq=False)
 class Heatmap:
 	"""A faceted matrix and the labels it is drawn with.
