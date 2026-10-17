@@ -960,11 +960,10 @@ def _render_projects(paths, search, failed, _written, active, progress, selectio
 	query = (search or "").strip().lower()
 	selected = {tuple(key) for key in selection}
 	rows = [
-		row
-		for location in paths
-		for row in _project_rows(
+		*_project_rows(
 			services.project_summary(location), query, expanded, selected, progress, failed
 		)
+		for location in paths
 	]
 	if not rows:
 		empty = (
@@ -1013,7 +1012,7 @@ def _render_actionbar(selection, progress, active, overwrite):
 		progress = services.pending_progress(selection, overwrite)
 		set_props("run-progress", {"data": progress})
 	if active and progress:
-		jobs = [job for recordings in progress.values() for job in recordings.values()]
+		jobs = [*recordings.values() for recordings in progress.values()]
 		done = sum(steps for steps, _, _ in jobs)
 		total = sum(steps for _, steps, _ in jobs)
 		noun = "recording" if len(jobs) == 1 else "recordings"
@@ -1361,7 +1360,7 @@ def _replace_recordings(pending, _skip, _confirm, queue, apply_to_all):
 
 	# Every name is decided: add the ones to replace, then let go of the staged files.
 	project = services.load_project(queue["location"])
-	files = [path for name in queue["replace"] for path in queue["existing"][name]]
+	files = [*queue["existing"][name] for name in queue["replace"]]
 	report = project.add_recordings(files, overwrite=True) if files else None
 	shutil.rmtree(queue["staging"], ignore_errors=True)
 

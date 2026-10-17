@@ -5,11 +5,12 @@ from dataclasses import dataclass
 from itertools import combinations, permutations, product
 from typing import Literal
 
-import networkx as nx
 import numpy as np
 import polars as pl
+lazy import networkx as nx
 
-from deepecohab.core.data_model import Layout
+from deepecohab.core import grids
+from deepecohab.core.data_model import CALENDAR_COLUMNS, Layout
 from deepecohab.plotting import durations
 from deepecohab.plotting.context import Granularity, PlotContext, Scope
 
@@ -562,13 +563,26 @@ def _proportion_together(context: PlotContext, scope: Scope) -> pl.LazyFrame:
 	exactly with the stored one at ``scope="cages"``.
 	"""
 	phase_seconds = pl.col("duration").dt.total_seconds(fractional=True)
+	keys = ["phase", "day", "phase_count", "animal_id", "animal_id_2"]
+	animal = pl.Enum(context.animal_ids)
+	pairs = pl.LazyFrame(
+		combinations(context.animal_ids, 2),
+		schema=[("animal_id", animal), ("animal_id_2", animal)],
+		orient="row",
+	)
+	phases = context.table("time_grid").lazy().select("phase", "day", "phase_count").unique()
 
-	return (
+	together = (
 		context.table("pairwise_meetings")
 		.lazy()
 		.filter(pl.col("position").is_in(context.scope_positions(scope)))
-		.group_by("phase", "day", "phase_count", "animal_id", "animal_id_2")
+		.group_by(keys)
 		.agg(pl.sum("time_together"))
+	)
+
+	# pairwise_meetings leaves out the phases a pair never met in, which are zeros here.
+	return (
+		grids.zero_filled(phases.join(pairs, how="cross"), together, keys)
 		.join(context.table("phase_durations").lazy(), on=["phase_count", "phase"], how="left")
 		.select(
 			"phase",
@@ -650,16 +664,28 @@ def prep_directed_heatmap(
 		case "mean":
 			agg_func = pl.mean(value).round(2).alias("mean")
 
-	frame = (
+	window = (
+		pl.col("phase").is_in(list(phase_type)),
+		window_filter(days_range, granularity, hours_range),
+	)
+	pairs = pl.LazyFrame(
+		permutations(animals, 2),
+		schema=[(column, pl.Enum(context.animal_ids)), (row, pl.Enum(context.animal_ids))],
+		orient="row",
+	)
+	units = context.table("time_grid").lazy().filter(*window).select(granularity).unique()
+
+	per_unit = (
 		context.table(table)
 		.lazy()
-		.sort(row, column)
-		.filter(
-			pl.col("phase").is_in(list(phase_type)),
-			window_filter(days_range, granularity, hours_range),
-		)
+		.filter(*window)
 		.group_by(granularity, column, row)
 		.agg(pl.sum(value))
+	)
+
+	# The table may leave out the units a pair had no events in; a mean counts them as zeros.
+	frame = (
+		grids.zero_filled(units.join(pairs, how="cross"), per_unit, [granularity, column, row])
 		.group_by(column, row, maintain_order=True)
 		.agg(agg_func)
 		.join(join_frame, on=[column, row], how="right", maintain_order="right")
@@ -906,12 +932,32 @@ def prep_pairwise_sociability(
 		],
 	)
 
+	window = (
+		pl.col("phase").is_in(list(phase_type)),
+		window_filter(days_range, granularity, hours_range),
+	)
+	selected = set(animals)
+	stored_pairs = pl.LazyFrame(
+		[
+			(position, first, second)
+			for position in positions
+			for first, second in combinations(context.animal_ids, 2)
+			if first in selected and second in selected
+		],
+		schema=[
+			("position", pl.Categorical()),
+			("animal_id", pl.Enum(context.animal_ids)),
+			("animal_id_2", pl.Enum(context.animal_ids)),
+		],
+		orient="row",
+	)
+	cells = context.table("time_grid").lazy().filter(*window).join(stored_pairs, how="cross")
+	meetings = context.table("pairwise_meetings").lazy().filter(*window)
+
+	# pairwise_meetings leaves out the cells a pair never met in; a mean counts them as zeros.
 	frame = (
-		context.table("pairwise_meetings")
-		.lazy()
-		.filter(
-			pl.col("phase").is_in(list(phase_type)),
-			window_filter(days_range, granularity, hours_range),
+		grids.zero_filled(
+			cells, meetings, [*CALENDAR_COLUMNS, "position", "animal_id", "animal_id_2"]
 		)
 		.group_by(["animal_id", "animal_id_2", "position"], maintain_order=True)
 		.agg(

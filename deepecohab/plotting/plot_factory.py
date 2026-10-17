@@ -334,7 +334,7 @@ def _event_spans(
 	facets: list[str] | None = None,
 	*,
 	above: bool = False,
-	offset: "PythonLiteral | None" = None,
+	offset: PythonLiteral | None = None,
 ) -> None:
 	"""Mark where each event ran on a time axis: a lane above the plot, a mark inside it.
 
@@ -686,17 +686,21 @@ def plot_time_alone(
 
 
 #: Title, y-axis title and hover label of the count line plots, per input.
-_LINE_LABELS: dict[str, tuple[str, str, str]] = {
-	"activity": ("<b>Activity over time</b>", "<b>Antenna detections</b>", "Detections"),
-	"chasings": ("<b>Chasing over time</b>", "<b># of chasing events</b>", "Events"),
-}
+_LINE_LABELS: frozendict[str, tuple[str, str, str]] = frozendict(
+	{
+		"activity": ("<b>Activity over time</b>", "<b>Antenna detections</b>", "Detections"),
+		"chasings": ("<b>Chasing over time</b>", "<b># of chasing events</b>", "Events"),
+	}
+)
 
 #: Hover label and axis title of each binned x axis.
-_X_LABELS: dict[str, tuple[str, str]] = {
-	"hour": ("Hour", "<b>Hour since phase onset</b>"),
-	"day": ("Day", "<b>Day</b>"),
-	"phase_count": ("Phase", "<b>Phase</b>"),
-}
+_X_LABELS: frozendict[str, tuple[str, str]] = frozendict(
+	{
+		"hour": ("Hour", "<b>Hour since phase onset</b>"),
+		"day": ("Day", "<b>Day</b>"),
+		"phase_count": ("Phase", "<b>Phase</b>"),
+	}
+)
 
 
 def _line_x_axis(

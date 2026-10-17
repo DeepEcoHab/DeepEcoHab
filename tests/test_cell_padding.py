@@ -6,12 +6,13 @@ import pytest
 import strategies
 from hypothesis import given, settings, strategies as st
 
-from deepecohab.core import transforms
+from deepecohab.core import grids, transforms
 from deepecohab.core.data_model import Recording
 
 TZ_NAME = "Europe/Warsaw"
 # Same zone as the frames make_frame builds: day and hour are now measured from the
 # recording's own origin, so a frame has to belong to the recording it is split for.
+# Its phases switch on the hour, so every cell is one whole hour.
 RECORDING = strategies.analysis_recording(
 	tz=TZ_NAME, start="2023-01-01 00:00:00", finish="2023-12-31 23:00:00"
 )
@@ -53,26 +54,27 @@ def make_frame(rows: list[dict]) -> pl.LazyFrame:
 
 
 def split(lf: pl.LazyFrame, recording=None) -> pl.DataFrame:
-	"""Minute-split pieces, with time_spent read back in seconds as the cases state it."""
+	"""Cell-split pieces, with time_spent read back in seconds as the cases state it."""
 	return (
-		transforms.split_on_minute_boundaries(lf, recording or RECORDING)
+		transforms.split_visits_on_cells(lf, recording or RECORDING)
 		.with_columns(pl.col("time_spent").dt.total_seconds(fractional=True))
 		.collect()
 	)
 
 
-def piece_starts(out: pl.DataFrame) -> pl.Series:
-	"""Reconstruct each piece's start = datetime(end) - time_spent."""
-	return out.select(
-		(
-			pl.col("datetime")
-			- pl.duration(microseconds=(pl.col("time_spent") * 1_000_000).round().cast(pl.Int64))
-		).alias("__s")
-	)["__s"]
+def crosses_a_cell_start(out: pl.DataFrame, recording: Recording) -> bool:
+	"""Whether any piece has a cell of ``recording`` beginning strictly inside it."""
+	starts = out["datetime"] - pl.Series(
+		[dt.timedelta(seconds=s) for s in out["time_spent"]], dtype=pl.Duration("us")
+	)
+	cells = grids.cell_starts(recording)
+	before_end = cells.search_sorted(out["datetime"], side="left").cast(pl.Int64)
+	inside = before_end - cells.search_sorted(starts, side="right").cast(pl.Int64)
+	return bool((inside > 0).any())
 
 
-def test_within_minute_not_split():
-	"""Interval inside one clock minute -> single passthrough row."""
+def test_within_cell_not_split():
+	"""Interval inside one hour -> single passthrough row."""
 	lf = make_frame(
 		[{"end": at(2023, 6, 15, 12, 0, 40), "time_spent": 20, "time_under": MINUTE / 4}]
 	)  # 12:00:20 -> 12:00:40
@@ -83,17 +85,25 @@ def test_within_minute_not_split():
 	assert out["time_under"][0] == MINUTE / 4
 
 
-def test_interval_exactly_one_aligned_minute_not_split():
-	"""[12:00:00, 12:01:00) is one aligned minute -> single piece."""
-	lf = make_frame([{"end": at(2023, 6, 15, 12, 1, 0), "time_spent": 60, "time_under": MINUTE}])
+def test_minute_mark_inside_a_cell_does_not_split():
+	"""12:00:40 -> 12:01:20 crosses a minute mark but no cell start -> one piece."""
+	lf = make_frame([{"end": at(2023, 6, 15, 12, 1, 20), "time_spent": 40, "time_under": MINUTE}])
+	out = split(lf)
+	assert out.height == 1
+	assert out["time_spent"][0] == pytest.approx(40)
+
+
+def test_interval_exactly_one_aligned_cell_not_split():
+	"""[12:00:00, 13:00:00) is one whole cell -> single piece."""
+	lf = make_frame([{"end": at(2023, 6, 15, 13, 0, 0), "time_spent": 3600, "time_under": MINUTE}])
 	out = split(lf)
 	assert out.height == 1
 	assert out["interpolated"].to_list() == [False]
 
 
-def test_single_minute_crossing_splits_into_two():
-	"""12:00:40 -> 12:01:20 crosses 12:01:00 -> two 20s pieces; first kept, second interpolated."""
-	lf = make_frame([{"end": at(2023, 6, 15, 12, 1, 20), "time_spent": 40, "time_under": MINUTE}])
+def test_single_cell_crossing_splits_into_two():
+	"""11:59:40 -> 12:00:20 crosses 12:00 -> two 20s pieces; first kept, second interpolated."""
+	lf = make_frame([{"end": at(2023, 6, 15, 12, 0, 20), "time_spent": 40, "time_under": MINUTE}])
 	out = split(lf).sort("datetime")
 	assert out.height == 2
 	assert out["interpolated"].to_list() == [False, True]
@@ -103,21 +113,21 @@ def test_single_minute_crossing_splits_into_two():
 	assert halves[1] == pytest.approx(MINUTE / 2, abs=dt.timedelta(microseconds=2))
 
 
-def test_multi_minute_crossing_piece_count():
-	"""A 2m40s interval crossing three minute marks yields four pieces."""
+def test_multi_cell_crossing_piece_count():
+	"""10:59:40 -> 13:00:20 crosses three cell starts and yields four pieces."""
 	lf = make_frame(
-		[{"end": at(2023, 6, 15, 12, 3, 20), "time_spent": 40 + 120, "time_under": MINUTE}]
-	)  # 12:00:40 -> 12:03:20 spans minutes 0,1,2,3 -> 4 pieces
+		[{"end": at(2023, 6, 15, 13, 0, 20), "time_spent": 2 * 3600 + 40, "time_under": MINUTE}]
+	)
 	out = split(lf).sort("datetime")
-	assert out.height == 4
-	# only the first per-minute piece represents the visit; the rest are interpolated
+	assert out["time_spent"].to_list() == pytest.approx([20, 3600, 3600, 20])
+	# only the first piece represents the visit; the rest are interpolated
 	assert out["interpolated"].to_list() == [False, True, True, True]
 
 
 def test_time_spent_conserved():
 	original = 40
 	lf = make_frame(
-		[{"end": at(2023, 6, 15, 12, 1, 20), "time_spent": original, "time_under": MINUTE}]
+		[{"end": at(2023, 6, 15, 12, 0, 20), "time_spent": original, "time_under": MINUTE}]
 	)
 	out = split(lf)
 	assert out["time_spent"].sum() == pytest.approx(original)
@@ -125,35 +135,21 @@ def test_time_spent_conserved():
 
 def test_time_under_conserved():
 	tu = dt.timedelta(seconds=37)
-	lf = make_frame([{"end": at(2023, 6, 15, 12, 1, 20), "time_spent": 40, "time_under": tu}])
+	lf = make_frame([{"end": at(2023, 6, 15, 12, 0, 20), "time_spent": 40, "time_under": tu}])
 	out = split(lf)
 	assert out["time_under"].sum() == pytest.approx(tu, abs=dt.timedelta(microseconds=4))
 
 
-def test_no_piece_exceeds_one_minute():
+def test_no_piece_crosses_a_cell_start():
 	lf = make_frame(
-		[{"end": at(2023, 6, 15, 12, 3, 20), "time_spent": 40 + 120, "time_under": MINUTE}]
+		[{"end": at(2023, 6, 15, 13, 0, 20), "time_spent": 2 * 3600 + 40, "time_under": MINUTE}]
 	)
-	out = split(lf)
-	assert (out["time_spent"] <= 60 + 1e-6).all()
-
-
-def test_each_piece_within_single_clock_minute():
-	"""No piece straddles a minute mark: start and (end - 1us) share a minute."""
-	lf = make_frame(
-		[{"end": at(2023, 6, 15, 12, 3, 20), "time_spent": 40 + 120, "time_under": MINUTE}]
-	)
-	out = split(lf)
-	starts = piece_starts(out)
-	ends = out["datetime"]
-	start_min = starts.dt.truncate("1m")
-	end_min = (ends - dt.timedelta(microseconds=1)).dt.truncate("1m")
-	assert (start_min == end_min).all()
+	assert not crosses_a_cell_start(split(lf), RECORDING)
 
 
 def test_hour_label_from_piece_start():
 	"""Hour column reflects the piece START, not the original interval end."""
-	# 11:59:40 -> 12:00:20 crosses both the minute AND the hour mark at 12:00.
+	# 11:59:40 -> 12:00:20 crosses the hour mark at 12:00.
 	lf = make_frame([{"end": at(2023, 6, 15, 12, 0, 20), "time_spent": 40, "time_under": MINUTE}])
 	# An origin in the same DST regime as the data, so egocentric hours and the wall
 	# clock agree and this is about the piece start alone. The DST case is its own test.
@@ -164,6 +160,21 @@ def test_hour_label_from_piece_start():
 	assert out.height == 2
 	# first piece 11:59:40-12:00:00 -> hour 11; second 12:00:00-12:00:20 -> hour 12
 	assert out["hour"].cast(pl.Int64).to_list() == [11, 12]
+
+
+def test_phase_switch_inside_an_hour_splits_it():
+	"""With dark from 19:20, the 19:00 hour holds two cells, and a visit across 19:20 is cut."""
+	recording = strategies.analysis_recording(
+		tz=TZ_NAME,
+		start="2023-06-15 00:00:00",
+		finish="2023-06-17 00:00:00",
+		phases={"light_phase": dt.time(7, 0), "dark_phase": dt.time(19, 20)},
+	)
+	lf = make_frame([{"end": at(2023, 6, 15, 19, 30, 0), "time_spent": 1200, "time_under": MINUTE}])
+	out = split(lf, recording).sort("datetime")
+	assert out["time_spent"].to_list() == pytest.approx([600, 600])
+	assert out["phase"].cast(pl.String).to_list() == ["light_phase", "dark_phase"]
+	assert out["hour"].n_unique() == 1
 
 
 def test_zero_duration_row_survives_without_nan():
@@ -177,7 +188,7 @@ def test_zero_duration_row_survives_without_nan():
 
 
 def test_row_id_present_in_output():
-	lf = make_frame([{"end": at(2023, 6, 15, 12, 1, 20), "time_spent": 40, "time_under": MINUTE}])
+	lf = make_frame([{"end": at(2023, 6, 15, 12, 0, 20), "time_spent": 40, "time_under": MINUTE}])
 	out = split(lf)
 	assert "row_id" in out.columns
 
@@ -186,8 +197,8 @@ def test_row_id_dedup_recovers_original_count():
 	"""unique(row_id, keep=first) returns exactly one row per original visit."""
 	rows = [
 		{"end": at(2023, 6, 15, 12, 0, 40), "time_spent": 20, "time_under": MINUTE},  # no split
-		{"end": at(2023, 6, 15, 12, 1, 20), "time_spent": 40, "time_under": MINUTE},  # 2 pieces
-		{"end": at(2023, 6, 15, 12, 3, 20), "time_spent": 160, "time_under": MINUTE},  # 4 pieces
+		{"end": at(2023, 6, 15, 12, 0, 20), "time_spent": 40, "time_under": MINUTE},  # 2 pieces
+		{"end": at(2023, 6, 15, 13, 0, 20), "time_spent": 7240, "time_under": MINUTE},  # 4 pieces
 	]
 	lf = make_frame(rows)
 	out = split(lf)
@@ -218,8 +229,8 @@ def test_dedup_first_piece_holds_piece_values_not_original():
 	read as the original duration.
 	"""
 	lf = make_frame(
-		[{"end": at(2023, 6, 15, 12, 1, 20), "time_spent": 40, "time_under": MINUTE}]
-	)  # splits into 20s + 20s at 12:01:00
+		[{"end": at(2023, 6, 15, 12, 0, 20), "time_spent": 40, "time_under": MINUTE}]
+	)  # splits into 20s + 20s at 12:00:00
 	out = split(lf)
 	first = out.unique("row_id", keep="first").row(0, named=True)
 	assert first["time_spent"] == pytest.approx(20)  # first piece, not 40
@@ -229,7 +240,7 @@ def test_non_interpolated_filter_recovers_original_count_per_animal():
 	"""Filtering interpolated==False yields the same row count per animal as the input.
 
 	Each original visit contributes exactly one non-interpolated piece regardless of
-	how many minute marks it crosses, so padded_df.filter(interpolated==False) matches
+	how many cells it crosses, so padded_df.filter(interpolated==False) matches
 	main_df row-for-row per animal.
 	"""
 	rows = [
@@ -241,14 +252,14 @@ def test_non_interpolated_filter_recovers_original_count_per_animal():
 		},  # no split
 		{
 			"animal_id": "A",
-			"end": at(2023, 6, 15, 12, 1, 20),
+			"end": at(2023, 6, 15, 12, 0, 20),
 			"time_spent": 40,
 			"time_under": MINUTE,
 		},  # 2 pieces
 		{
 			"animal_id": "B",
-			"end": at(2023, 6, 15, 12, 3, 20),
-			"time_spent": 160,
+			"end": at(2023, 6, 15, 13, 0, 20),
+			"time_spent": 7240,
 			"time_under": MINUTE,
 		},  # 4 pieces
 	]
@@ -266,30 +277,31 @@ def test_non_interpolated_filter_recovers_original_count_per_animal():
 # phase boundaries; see tests/strategies.py.
 
 
-@settings(max_examples=200)
+@settings(max_examples=200, deadline=None)
 @given(v=strategies.visit, tz=strategies.timezones, pcfg=strategies.phase_configs)
 def test_property_conserves_time_spent(v, tz, pcfg):
-	"""However a single visit is split across minute marks, total time_spent is
-	preserved and no piece exceeds one minute, in any timezone / phase config.
+	"""However a single visit is split across cells, total time_spent is preserved and
+	no piece crosses the start of a cell, in any timezone / phase config.
 	"""
-	out = split(strategies.padding_frame([v], tz), _recording(tz, pcfg))
+	recording = _recording(tz, pcfg)
+	out = split(strategies.padding_frame([v], tz), recording)
 	assert out["time_spent"].sum() == pytest.approx(v["time_spent"], abs=1e-6)
-	assert (out["time_spent"] <= 60 + 1e-6).all()
+	assert not crosses_a_cell_start(out, recording)
 
 
-@settings(max_examples=200)
+@settings(max_examples=200, deadline=None)
 @given(
 	rows=st.lists(strategies.visit, min_size=1, max_size=20),
 	tz=strategies.timezones,
 	pcfg=strategies.phase_configs,
 )
 def test_property_preserves_identity_and_dedup(rows, tz, pcfg):
-	"""Padding may explode rows into per-minute pieces, but unique(row_id,
+	"""Padding may explode rows into per-cell pieces, but unique(row_id,
 	keep="first") recovers exactly one row per original visit, filtering
 	interpolated==False keeps exactly one piece per visit, and every piece keeps the
 	animal_id/position of the visit it came from (row_id i == row i).
 	"""
-	out = transforms.split_on_minute_boundaries(
+	out = transforms.split_visits_on_cells(
 		strategies.padding_frame(rows, tz), _recording(tz, pcfg)
 	).collect()
 

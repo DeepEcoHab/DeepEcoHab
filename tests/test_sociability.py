@@ -240,12 +240,13 @@ def test_a_pair_never_together_sits_at_minus_the_chance_sum(monkeypatch):
 
 	Both animals use both cages but never at the same time, so the observed term is zero
 	in every cage and the metric is exactly the negated chance expectation - the floor
-	the measure can reach for that pair.
+	the measure can reach for that pair. pairwise_meetings stores no row for a cage a pair
+	never met in, so the chance terms must come through without one.
 	"""
 	activity = activity_frame(
 		[("A", "cage_1", 40), ("B", "cage_1", 30), ("A", "cage_2", 20), ("B", "cage_2", 10)]
 	)
-	pairwise = pairwise_frame([("A", "B", "cage_1", 0), ("A", "B", "cage_2", 0)])
+	pairwise = pairwise_frame([])
 
 	result = run_sociability(
 		monkeypatch, activity=activity, pairwise=pairwise, durations=durations_frame(100)

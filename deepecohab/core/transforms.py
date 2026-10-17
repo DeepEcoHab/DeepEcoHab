@@ -226,6 +226,77 @@ def occupancy_spans(intervals: pl.LazyFrame) -> pl.LazyFrame:
 	)
 
 
+def merge_contiguous_stays(intervals: pl.LazyFrame) -> pl.LazyFrame:
+	"""Frame of each animal's back-to-back intervals in one position merged into one stay.
+
+	A zero-length interval is dropped first: nothing can happen in it, and left in it
+	would split the stay it sits inside.
+
+	Args:
+		intervals: table with ``animal_id``, ``position`` and the ``start``/``end``
+			bounds :func:`add_occupancy_bounds` adds.
+
+	Returns:
+		One row per stay, with ``animal_id``, ``position``, ``start`` and ``end``.
+	"""
+	# Overlapping counts as back-to-back: registrations never overlap, but intervals
+	# rounded to the microsecond can, and two stays of one animal would meet each other's
+	# partners twice over the overlap.
+	new_stay = (pl.col("position") != pl.col("position").shift(1)) | (
+		pl.col("start") > pl.col("end").shift(1)
+	)
+	return (
+		intervals.filter(pl.col("end") > pl.col("start"))
+		.sort("animal_id", "start")
+		.with_columns(new_stay.fill_null(True).cum_sum().over("animal_id").alias("__stay"))
+		.group_by("animal_id", "__stay")
+		.agg(pl.col("position").first(), pl.col("start").min(), pl.col("end").max())
+		.drop("__stay")
+	)
+
+
+def overlapping_stays(stays: pl.LazyFrame) -> pl.LazyFrame:
+	"""Frame of every meeting: two animals' stays overlapping in one position.
+
+	A meeting runs from the later arrival to the earlier departure, so it is one unbroken
+	stretch of co-presence however many other animals come and go during it, and the
+	result holds one row per meeting rather than one per pair and moment.
+
+	Each position's overlap join is collected before the result is filtered: handed a
+	third predicate such as ``animal_id < animal_id_2``, polars may drive the IEJoin
+	with it instead of the overlap, which yields nearly every pair of stays in the
+	position and can exhaust memory.
+
+	Args:
+		stays: :func:`merge_contiguous_stays` output.
+
+	Returns:
+		One row per meeting, with ``position``, ``animal_id`` before ``animal_id_2``,
+		``start`` and ``end``.
+	"""
+	collected = stays.collect()
+	meetings = []
+	# An empty table still runs once, so the result keeps its schema.
+	for part in collected.partition_by("position") or [collected]:
+		other = part.drop("position").rename(
+			{"animal_id": "animal_id_2", "start": "start_2", "end": "end_2"}
+		)
+		meetings.append(
+			part.join_where(
+				other, pl.col("start") < pl.col("end_2"), pl.col("start_2") < pl.col("end")
+			)
+			.filter(pl.col("animal_id") < pl.col("animal_id_2"))
+			.select(
+				"position",
+				"animal_id",
+				"animal_id_2",
+				pl.max_horizontal("start", "start_2").alias("start"),
+				pl.min_horizontal("end", "end_2").alias("end"),
+			)
+		)
+	return pl.concat(meetings).lazy()
+
+
 def cooccupancy_spans(intervals: pl.LazyFrame) -> pl.LazyFrame:
 	"""Frame of every span of time two animals shared a position, one row per pair.
 
@@ -261,58 +332,97 @@ def cooccupancy_spans(intervals: pl.LazyFrame) -> pl.LazyFrame:
 	)
 
 
-def split_on_minute_boundaries(frame: pl.LazyFrame, recording: Recording) -> pl.LazyFrame:
-	"""Frame with visits that straddle minute boundaries cut into per-minute pieces.
+def split_on_cell_boundaries(
+	frame: pl.LazyFrame, recording: Recording, start: str, end: str
+) -> pl.LazyFrame:
+	"""Frame with every ``[start, end)`` interval cut wherever a cell of the time grid begins.
 
-	Each row is the interval ``[datetime - time_spent, datetime)``. Cutting it at
-	every minute mark means no piece crosses one, so its time can be attributed to
-	the right minute, hour and phase. ``time_spent`` becomes each piece's own length
-	and ``time_under`` is shared out in proportion.
+	No piece then crosses from one hour, phase or day into the next, so its time can be
+	attributed to the cell it lies in. A zero-length interval stays a single piece.
+
+	Args:
+		frame: table holding the interval bounds.
+		recording: the recording whose grid the cuts come from.
+		start: the column holding each interval's start.
+		end: the column holding each interval's end.
+
+	Returns:
+		One row per piece, ``start`` and ``end`` narrowed to it, with ``first_piece``
+		marking the piece each interval opens with and the ``phase``, ``day`` and
+		``hour`` of the cell it lies in.
+	"""
+	starts = grids.cell_starts(recording)
+	cells = pl.lit(starts)
+	last = len(starts) - 1
+
+	# Indices into the cell starts: the cell holding the interval's start (-1 before the
+	# window) and the last cell the interval reaches into, never before the first.
+	first = cells.search_sorted(pl.col(start), side="right").cast(pl.Int64) - 1
+	final = pl.max_horizontal(
+		cells.search_sorted(pl.col(end), side="left").cast(pl.Int64) - 1, first
+	)
+
+	return (
+		frame.with_columns(first.alias("__first"), final.alias("__final"))
+		.with_columns(pl.int_ranges("__first", pl.col("__final") + 1).alias("__cell"))
+		.explode("__cell")
+		.with_columns(
+			pl.when(pl.col("__cell") == pl.col("__first"))
+			.then(pl.col(start))
+			.otherwise(cells.gather(pl.col("__cell").clip(0, last)))
+			.alias(start),
+			pl.when(pl.col("__cell") == pl.col("__final"))
+			.then(pl.col(end))
+			.otherwise(cells.gather((pl.col("__cell") + 1).clip(0, last)))
+			.alias(end),
+			(pl.col("__cell") == pl.col("__first")).alias("first_piece"),
+		)
+		.with_columns(
+			grids.get_phase(recording, start),
+			grids.get_day(recording, start),
+			grids.get_hour(recording, start),
+		)
+		.drop("__first", "__final", "__cell")
+	)
+
+
+def split_visits_on_cells(frame: pl.LazyFrame, recording: Recording) -> pl.LazyFrame:
+	"""Frame with visits that straddle cells of the time grid cut into one piece per cell.
+
+	Each row is the interval ``[datetime - time_spent, datetime)``, cut by
+	:func:`split_on_cell_boundaries` so its time is attributed to the right hour, phase
+	and day. ``time_spent`` becomes each piece's own length and ``time_under`` is shared
+	out in proportion.
 
 	Within a split visit only the first piece keeps ``interpolated=False``, so
 	filtering ``interpolated == False`` recovers one row per original visit.
 
 	Args:
 		frame: table with ``datetime``, ``time_spent`` and ``time_under``.
-		recording: the recording whose phases the pieces are assigned to.
+		recording: the recording whose grid the pieces are assigned to.
 
 	Returns:
-		One row per minute-aligned piece, with ``interpolated`` and a ``row_id``
-		identifying the visit the piece came from.
+		One row per piece, with ``interpolated`` and a ``row_id`` identifying the visit
+		the piece came from.
 	"""
-	minute = pl.duration(minutes=1)
+	visit = pl.col("time_spent").dt.total_microseconds()
+	piece = (pl.col("datetime") - pl.col("__start")).dt.total_microseconds()
 
 	return (
 		frame.with_row_index("row_id")
-		.with_columns((pl.col("datetime") - pl.col("time_spent")).alias("__start"))
 		.with_columns(
-			pl.datetime_ranges(
-				pl.col("__start").dt.truncate("1m") + minute,
-				pl.col("datetime"),
-				interval="1m",
-				closed="left",
-			).alias("__marks")
+			(pl.col("datetime") - pl.col("time_spent")).alias("__start"), visit.alias("__visit")
 		)
+		.pipe(split_on_cell_boundaries, recording, "__start", "datetime")
 		.with_columns(
-			pl.concat_list("__start", "__marks").alias("__piece_start"),
-			pl.concat_list("__marks", "datetime").alias("__piece_end"),
-		)
-		.explode("__piece_start", "__piece_end", empty_as_null=True)
-		.with_columns(
-			(pl.col("datetime") - pl.col("__start")).dt.total_microseconds().alias("__visit"),
-			(pl.col("__piece_end") - pl.col("__piece_start"))
-			.dt.total_microseconds()
-			.alias("__piece"),
-		)
-		.with_columns(
-			(pl.col("__piece_end") - pl.col("__piece_start")).alias("time_spent"),
+			(pl.col("datetime") - pl.col("__start")).alias("time_spent"),
 			pl.when(pl.col("__visit") > 0)
 			.then(
 				pl.duration(
 					microseconds=(
 						pl.col("time_under")
 						.dt.total_microseconds()
-						.mul(pl.col("__piece"))
+						.mul(piece)
 						.truediv(pl.col("__visit"))
 					)
 					.round()
@@ -321,13 +431,7 @@ def split_on_minute_boundaries(frame: pl.LazyFrame, recording: Recording) -> pl.
 			)
 			.otherwise(pl.col("time_under"))
 			.alias("time_under"),
-			(pl.int_range(pl.len()).over("row_id") > 0).alias("interpolated"),
+			(~pl.col("first_piece")).alias("interpolated"),
 		)
-		.with_columns(
-			grids.get_phase(recording, "__piece_start"),
-			grids.get_day(recording, "__piece_start"),
-			grids.get_hour(recording, "__piece_start"),
-			pl.col("__piece_end").alias("datetime"),
-		)
-		.select(pl.exclude("^__.*$"))
+		.drop("__start", "__visit", "first_piece")
 	)

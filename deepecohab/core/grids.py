@@ -78,6 +78,20 @@ def build_time_grid(recording: Recording) -> pl.LazyFrame:
 	Returns:
 		Frame with columns ``day``, ``phase``, ``hour`` and ``phase_count``.
 	"""
+	return _time_cells(recording).drop("bin_start")
+
+
+def cell_starts(recording: Recording) -> pl.Series:
+	"""Every instant a cell of :func:`build_time_grid` begins, in order.
+
+	Cutting an interval at these instants leaves no piece crossing from one hour, phase
+	or day into the next, so each piece belongs wholly to the cell it starts in.
+	"""
+	return _time_cells(recording).select("bin_start").collect().to_series()
+
+
+def _time_cells(recording: Recording) -> pl.LazyFrame:
+	"""The time grid's cells in order, each with the ``bin_start`` instant it opens at."""
 	timezone = recording.timeline.recording_timezone
 	start, finish = recording.timeline.local_span
 
@@ -101,7 +115,6 @@ def build_time_grid(recording: Recording) -> pl.LazyFrame:
 		# The grid holds every phase occurrence in chronological order, so numbering its
 		# runs directly is correct here - and only here.
 		.with_columns((pl.col("phase").rle_id() + 1).cast(pl.UInt16).alias("phase_count"))
-		.drop("bin_start")
 	)
 
 
@@ -186,8 +199,13 @@ def reindex_onto_grid(
 		join_columns.append("position")
 	join_columns += animal_columns
 
+	return zero_filled(full_grid, data, join_columns)
+
+
+def zero_filled(scaffold: pl.LazyFrame, data: pl.LazyFrame, on: list[str]) -> pl.LazyFrame:
+	"""``data`` left-joined onto every row of ``scaffold``, with zero where it has none."""
 	return (
-		full_grid.join(data, on=join_columns, how="left")
+		scaffold.join(data, on=on, how="left")
 		.with_columns(cs.duration().fill_null(pl.duration(microseconds=0)))
 		.fill_null(0)
 	)

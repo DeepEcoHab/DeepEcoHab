@@ -123,6 +123,27 @@ def test_single_animal_alone(make_df):
 	assert row["day"] == 1
 
 
+def test_threshold_applies_to_the_whole_bout(make_df):
+	"""Back-to-back reads of one solitary bout count together against minimum_time_alone.
+
+	8 s then 7 s in the same cage is one 15 s bout, kept whole at a 10 s threshold even
+	though neither read clears it alone; a separate 6 s bout is still dropped.
+	"""
+	df = make_df(
+		{
+			"animal_id": ["A", "A", "A"],
+			"position": ["cage_1", "cage_1", "cage_1"],
+			"datetime": [
+				at(2023, 5, 24, 12, 0, 8),
+				at(2023, 5, 24, 12, 0, 15),
+				at(2023, 5, 24, 12, 5, 6),
+			],
+			"time_spent": [8.0, 7.0, 6.0],
+		}
+	)
+	assert alone_row(alone(df, minimum_time_alone=10.0), "A")["time_alone"] == 15
+
+
 def test_two_animals_overlapping_completely(make_df):
 	"""Two animals on the exact same interval - neither is ever alone."""
 	df = make_df(

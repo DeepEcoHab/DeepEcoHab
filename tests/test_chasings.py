@@ -83,13 +83,9 @@ def test_counts_are_per_tunnel(monkeypatch):
 	assert cell(result, "A", "B", "c1_c2") == 0
 
 
-def test_empty_match_df_yields_all_zero_grid(monkeypatch):
-	"""No chasing events anywhere (e.g. a quiet day) -> a full grid of zeros."""
-	result = run_chasings(monkeypatch, strategies.match_df_frame([], RECORDING))
-
-	assert result.height > 0  # the dense grid still exists
-	assert result["chasings"].sum() == 0
-	assert result["chasings"].null_count() == 0
+def test_empty_match_df_yields_no_rows(monkeypatch):
+	"""Only cells with a chasing are stored, so a quiet recording stores none."""
+	assert run_chasings(monkeypatch, strategies.match_df_frame([], RECORDING)).is_empty()
 
 
 def exact_cell(result: pl.DataFrame, chaser: str, chased: str, day: int, hour: int) -> int:

@@ -25,7 +25,7 @@ def main():
 
 	source = resources.files("deepecohab.app.assets") / icon_name
 	with resources.as_file(source) as src_path:
-		shutil.copyfile(src_path, icon_dest)
+		src_path.copy(icon_dest)
 
 	make_shortcut(
 		target,

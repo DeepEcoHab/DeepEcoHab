@@ -103,7 +103,7 @@ def seconds(values: list[float]) -> pl.Series:
 
 
 def padding_frame(rows: list[dict], tz: str) -> pl.LazyFrame:
-	"""Frame shaped for transforms.split_on_minute_boundaries, one row per visit."""
+	"""Frame shaped for transforms.split_visits_on_cells, one row per visit."""
 	return pl.LazyFrame(
 		{
 			"animal_id": pl.Series([r["animal_id"] for r in rows], dtype=pl.Enum(ANIMALS)),
@@ -611,7 +611,7 @@ def padded_df_frame(rows: list[dict], recording: Recording) -> pl.LazyFrame:
 	Each row needs ``animal_id``, ``position`` (undirected or cage), ``datetime``
 	(the interval END, tz-aware) and ``time_spent`` in seconds; ``interpolated``
 	defaults to False. The calendar columns are derived from the piece's START, as
-	``split_on_minute_boundaries`` derives them via ``__piece_start`` - a piece belongs
+	``split_on_cell_boundaries`` derives them from the piece start - a piece belongs
 	to the bin it began in, so a fixture that crosses a boundary has to agree.
 
 	With no rows, an empty frame carrying the full typed schema is returned, as

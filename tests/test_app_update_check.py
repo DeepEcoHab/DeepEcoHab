@@ -66,7 +66,7 @@ def test_commands_upgrade_the_app_extra_and_restart_with_the_same_options(monkey
 	monkeypatch.setattr(updater.shutil, "which", lambda name: f"/bin/{name}")
 	monkeypatch.setattr(updater.sys, "argv", ["/bin/deepecohab-app", "--port", "8060"])
 	assert updater.commands() == (
-		["/bin/uv", "tool", "upgrade", "deepecohab[app]"],
+		["/bin/uv", "tool", "upgrade", "--python", "3.15", "deepecohab[app]"],
 		["/bin/deepecohab-app", "--port", "8060"],
 	)
 

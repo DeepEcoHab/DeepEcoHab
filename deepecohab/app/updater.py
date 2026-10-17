@@ -23,7 +23,8 @@ def commands() -> tuple[list[str], list[str]]:
 	"""The upgrade command, and the command that starts the app with its current options."""
 	app = shutil.which("deepecohab-app")
 	start = [app] if app else [sys.executable, "-m", "deepecohab.app"]
-	return [shutil.which("uv") or "uv", "tool", "upgrade", "deepecohab[app]"], [
+	upgrade = [shutil.which("uv") or "uv", "tool", "upgrade", "--python", "3.15", "deepecohab[app]"]
+	return upgrade, [
 		*start,
 		*sys.argv[1:],
 	]

@@ -1,5 +1,6 @@
+import copy
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Literal
 
 import polars as pl
@@ -16,7 +17,7 @@ ORDERED_COLUMNS: frozenset[str] = frozenset({"day", "phase_count", "hour", "n_mi
 
 AGE = "age_days"
 #: What Age can be rounded to, in days per unit; a month is the mean Gregorian one.
-AGE_UNITS: dict[str, float] = {"days": 1, "weeks": 7, "months": 30.4375}
+AGE_UNITS: frozendict[str, float] = frozendict({"days": 1, "weeks": 7, "months": 30.4375})
 
 #: The long-format triple the rate semantics are built on.
 VALUE, EXPOSURE, METRIC = "value", "exposure", "metric"
@@ -24,27 +25,29 @@ VALUE, EXPOSURE, METRIC = "value", "exposure", "metric"
 #: Column -> palette group, for the columns deepecohab always produces. Anything not
 #: named here is one of the project's own declared events (see ``prepare``), or falls
 #: back to "Recording" - the dtype-based classification below still decides its kind.
-GROUPS: dict[str, str] = {
-	VALUE: "Measure",
-	METRIC: "Measure",
-	"day": "Time",
-	"phase_count": "Time",
-	"hour": "Time",
-	"phase": "Time",
-	"position": "Position",
-	"position_type": "Position",
-	"recording": "Recording",
-	"n_mice": "Recording",
-	"animal_id": "Animal",
-	"subject_name": "Animal",
-	"sex": "Animal",
-	"genotype": "Animal",
-	"treatment": "Animal",
-	"mouse_line": "Animal",
-	"genetic_background": "Animal",
-	"age_days": "Animal",
-	"date_of_birth": "Animal",
-}
+GROUPS: frozendict[str, str] = frozendict(
+	{
+		VALUE: "Measure",
+		METRIC: "Measure",
+		"day": "Time",
+		"phase_count": "Time",
+		"hour": "Time",
+		"phase": "Time",
+		"position": "Position",
+		"position_type": "Position",
+		"recording": "Recording",
+		"n_mice": "Recording",
+		"animal_id": "Animal",
+		"subject_name": "Animal",
+		"sex": "Animal",
+		"genotype": "Animal",
+		"treatment": "Animal",
+		"mouse_line": "Animal",
+		"genetic_background": "Animal",
+		"age_days": "Animal",
+		"date_of_birth": "Animal",
+	}
+)
 
 
 @dataclass(frozen=True)
@@ -156,7 +159,9 @@ def prepare(
 
 def in_age_unit(fields: Sequence[Field], unit: str) -> list[Field]:
 	"""``fields`` with Age labelled in the unit it is rounded to."""
-	return [replace(item, label=f"Age ({unit})") if item.name == AGE else item for item in fields]
+	return [
+		copy.replace(item, label=f"Age ({unit})") if item.name == AGE else item for item in fields
+	]
 
 
 def distinct_values(frame: pl.LazyFrame, column: str) -> list[str]:

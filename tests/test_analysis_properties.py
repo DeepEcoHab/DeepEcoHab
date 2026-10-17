@@ -141,19 +141,19 @@ def test_pairwise_time_together_never_exceeds_either_occupancy(plan):
 		)
 
 
-# One cage stay that may span several minutes: (cage, gap-before, dwell). Dwells
-# reach past a minute mark and start on a fractional second, so padding really
-# splits them -- the exact scenario that used to inflate encounters.
+# One cage stay that may span several cells: (cage, gap-before, dwell). Dwells reach
+# past an hour mark and start on a fractional second, so padding really splits them --
+# the exact scenario that used to inflate encounters.
 _long_stay = st.tuples(
 	st.sampled_from(CAGES),
-	st.floats(min_value=0, max_value=30, allow_nan=False),
-	st.floats(min_value=0.5, max_value=200, allow_nan=False),
+	st.floats(min_value=0, max_value=1800, allow_nan=False),
+	st.floats(min_value=0.5, max_value=7200, allow_nan=False),
 )
 long_cage_plans = st.fixed_dictionaries({a: st.lists(_long_stay, max_size=4) for a in ANIMALS})
 
 
 def split_padded_from_plan(plan: dict[str, list[tuple]]) -> tuple[pl.LazyFrame, dict]:
-	"""Lay each animal's stays end-to-end, then minute-split them via real padding.
+	"""Lay each animal's stays end-to-end, then cut them at cells via real padding.
 
 	Returns the padded_df and the per-(animal, cage) visit counts taken straight from
 	the plan (one stay == one visit), so a test can bound encounters by visit totals.
@@ -179,7 +179,7 @@ def split_padded_from_plan(plan: dict[str, list[tuple]]) -> tuple[pl.LazyFrame, 
 			"time_under": pl.Series([dt.timedelta(0) for _ in rows], dtype=pl.Duration("us")),
 		}
 	)
-	return transforms.split_on_minute_boundaries(frame.lazy(), RECORDING), visits
+	return transforms.split_visits_on_cells(frame.lazy(), RECORDING), visits
 
 
 @settings(max_examples=60, deadline=None)
@@ -187,8 +187,8 @@ def split_padded_from_plan(plan: dict[str, list[tuple]]) -> tuple[pl.LazyFrame, 
 def test_pairwise_encounters_never_exceed_visit_sum(plan):
 	"""A pair can't meet in a cage more often than their combined visits to it.
 
-	The user's invariant. Stays span minute marks so padded_df splits them into many
-	pieces; the sweep must re-stitch those pieces per visit rather than count each
+	The user's invariant. Stays span hour marks so padding splits them into many
+	pieces; the step must merge those pieces back per visit rather than count each
 	piece as a fresh encounter (the bug that pushed encounters above the visit sum).
 	minimum_time=0 keeps every meeting, making the bound tightest.
 	"""

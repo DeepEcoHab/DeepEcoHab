@@ -1,9 +1,11 @@
 import itertools
 
+lazy import networkx as nx
+
 
 def antennas(antenna_combinations: dict[str, str]) -> set[str]:
 	"""The antennas the layout names."""
-	return {antenna for pair in antenna_combinations for antenna in pair.split("_")}
+	return {*pair.split("_") for pair in antenna_combinations}
 
 
 def unique_routes(antenna_combinations: dict[str, str]) -> dict[tuple[str, str], list[str]]:
@@ -17,10 +19,6 @@ def unique_routes(antenna_combinations: dict[str, str]) -> dict[tuple[str, str],
 		The antennas crossed, in order, keyed by the antennas the step was seen
 		between.
 	"""
-	# Imported here rather than at module scope: networkx costs ~150ms to import and
-	# core is kept cheap to import (test_core_does_not_import_plotting).
-	import networkx as nx
-
 	pairs = (pair.split("_") for pair in antenna_combinations)
 	graph = nx.DiGraph([(source, target) for source, target in pairs if source != target])
 

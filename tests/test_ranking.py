@@ -8,24 +8,22 @@ hand-built match table and exercise the pure compute body directly via
 """
 
 import datetime as dt
+import random
 from functools import partial
 from zoneinfo import ZoneInfo
 
 import polars as pl
 import pytest
 import strategies
-from openskill.models import PlackettLuce
 
-from deepecohab.core import antenna_analysis
+from deepecohab.core import antenna_analysis, ranking_algorithm
 from deepecohab.core.data_model import AnalysisParams, Recording
 
 TZ = ZoneInfo("Europe/Warsaw")
 
 PHASE_CFG = {"light_phase": dt.time(7, 0), "dark_phase": dt.time(20, 0)}
 
-# The model configuration must match calculate_ranking exactly so expected
-# ordinals computed here line up with the ones the step emits.
-MODEL = PlackettLuce(limit_sigma=True, balance=True)
+MODEL = ranking_algorithm.MODEL
 
 
 at = partial(strategies.at, tz=str(TZ))
@@ -380,6 +378,32 @@ def test_tied_ordinals_share_the_same_rank_label(monkeypatch):
 		"B": "subordinate",
 		"D": "subordinate",
 	}
+
+
+def test_replay_matches_openskill_bit_for_bit(monkeypatch):
+	"""The step's written-out one-on-one update gives exactly what ``model.rate`` gives.
+
+	Long enough to reach the rare sigmas where ``sigma**2`` and ``sigma * sigma`` differ
+	in the last bit, so the float operations have to match openskill's one for one.
+	"""
+	animals = list("ABCDEFGHI")
+	rng = random.Random(1)
+	pairs = [rng.sample(animals, 2) for _ in range(3000)]
+	matches = [
+		(loser, winner, at(2023, 5, 24, 12, 0, 0) + dt.timedelta(seconds=i))
+		for i, (loser, winner) in enumerate(pairs)
+	]
+	result = run_ranking(monkeypatch, matches, animals)
+
+	ratings = {animal: MODEL.rating() for animal in animals}
+	expected = []
+	for loser, winner in pairs:
+		[[ratings[loser]], [ratings[winner]]] = MODEL.rate(
+			[[ratings[loser]], [ratings[winner]]], ranks=[1, 0]
+		)
+		expected += [(ratings[a].mu, ratings[a].sigma) for a in animals]
+
+	assert list(result.select("mu", "sigma").iter_rows()) == expected
 
 
 def test_replay_is_deterministic_when_matches_share_a_timestamp(monkeypatch):

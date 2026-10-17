@@ -1,7 +1,7 @@
+import copy
 import itertools
 import re
 from collections.abc import Sequence
-from dataclasses import replace
 from typing import Any, Literal
 
 import numpy as np
@@ -28,11 +28,11 @@ from deepecohab.plotting.registry import Figure, PlotRegistry, plotted
 from deepecohab.plotting.theme import sample_palette
 
 PHASES = ("light_phase", "dark_phase")
-BY_COHORT = {"color_by": available_attributes}
+BY_COHORT = frozendict({"color_by": available_attributes})
 #: ``Timeline.phases`` need not carry both keys, so a plot's phase_type choices are
 #: resolved from the cohort's own phases rather than assumed to always be the pair.
-PHASE_TYPE = {"phase_type": lambda context: list(context.phases)}
-BY_COHORT_AND_PHASE = {**BY_COHORT, **PHASE_TYPE}
+PHASE_TYPE = frozendict({"phase_type": lambda context: list(context.phases)})
+BY_COHORT_AND_PHASE = BY_COHORT | PHASE_TYPE
 
 
 def _window(
@@ -284,7 +284,7 @@ def cage_preference_evolution(
 		unit,
 		hours_range,
 	)
-	heatmap = replace(heatmap, y=animal_labels(context, label_by))
+	heatmap = copy.replace(heatmap, y=animal_labels(context, label_by))
 
 	spans = prepare.prep_event_spans(context, window, granularity, x, hours_range)
 
@@ -494,7 +494,7 @@ def polar_metrics(
 		"Brighter cells mean more chasings; compare a cell with its mirror across the diagonal "
 		"to see who dominates the pair."
 	),
-	requires=("chasings_df", "animals"),
+	requires=("chasings_df", "time_grid", "animals"),
 	dynamic_choices=PHASE_TYPE,
 )
 def chasings_heatmap(
@@ -543,7 +543,7 @@ def chasings_heatmap(
 		"(row) pair; sum totals them, mean averages per day or phase. Compare mirrored cells to "
 		"see who dominates."
 	),
-	requires=("tube_test_df", "animals"),
+	requires=("tube_test_df", "time_grid", "animals"),
 	dynamic_choices=PHASE_TYPE,
 )
 def tube_test_heatmap(
@@ -588,7 +588,7 @@ def tube_test_heatmap(
 		"one matrix per cage or tunnel. Co-presence shorter than the minimum meeting time is "
 		"dropped. Sum totals the window; mean averages the hourly values."
 	),
-	requires=("pairwise_meetings", "animals"),
+	requires=("pairwise_meetings", "time_grid", "animals"),
 	dynamic_choices=PHASE_TYPE,
 )
 def pairwise_sociability(
@@ -621,7 +621,9 @@ def pairwise_sociability(
 
 	labels = animal_labels(context, label_by)
 
-	figure = plot_factory.plot_sociability_heatmap(replace(heatmap, x=labels, y=labels), metric)
+	figure = plot_factory.plot_sociability_heatmap(
+		copy.replace(heatmap, x=labels, y=labels), metric
+	)
 	names = ("position", "animal", "partner", heatmap.label)
 	return plotted(figure, data=_cells(heatmap.values, names, heatmap.facets, labels, labels))
 
@@ -635,7 +637,13 @@ def pairwise_sociability(
 		"animal's own cage time (tA·tB/T²), summed over cages; positive means the pair sought "
 		"each other out. Cells average the selected phases."
 	),
-	requires=("incohort_sociability", "pairwise_meetings", "phase_durations", "animals"),
+	requires=(
+		"incohort_sociability",
+		"pairwise_meetings",
+		"phase_durations",
+		"time_grid",
+		"animals",
+	),
 	dynamic_choices=PHASE_TYPE,
 )
 def within_cohort_sociability(
@@ -679,7 +687,7 @@ def within_cohort_sociability(
 		"MAD/median of those shares, clipped to 0-1; points further right are steadier "
 		"relationships."
 	),
-	requires=("pairwise_meetings", "phase_durations", "animals"),
+	requires=("pairwise_meetings", "phase_durations", "time_grid", "animals"),
 	dynamic_choices=BY_COHORT_AND_PHASE,
 )
 def social_stability(
@@ -790,7 +798,7 @@ def network_dominance(
 		"cohort's range. Edges under the cutoff (percent of the strongest) are dropped before "
 		"the layout is fitted."
 	),
-	requires=("pairwise_meetings", "phase_durations", "animals"),
+	requires=("pairwise_meetings", "phase_durations", "time_grid", "animals"),
 	dynamic_choices=BY_COHORT,
 )
 def network_sociability(

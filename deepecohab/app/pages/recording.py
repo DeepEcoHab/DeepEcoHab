@@ -47,29 +47,31 @@ dash.register_page(
 
 #: The filters a card can ignore, as (icon, label, tooltip); deh.plotRequest shows the badge
 #: while its control is narrowed.
-_BADGES = {
-	"window": (
-		"calendar",
-		"Whole recording",
-		"This card always covers the whole recording; the window does not apply to it.",
-	),
-	"hours": (
-		"clock",
-		"Whole day",
-		"This card has no hourly breakdown; the hours window does not apply to it.",
-	),
-	"phases": (
-		"moon",
-		"Both phases",
-		"This card does not split by phase; the phase filter does not apply to it.",
-	),
-	"group_mean": (
-		"users",
-		"Per animal",
-		"Group mean does not apply here; this card shows one line per animal.",
-	),
-}
-_OPTION_LABELS = {"agg": "Aggregate", "edge_cutoff": "Hide edges below"}
+_BADGES = frozendict(
+	{
+		"window": (
+			"calendar",
+			"Whole recording",
+			"This card always covers the whole recording; the window does not apply to it.",
+		),
+		"hours": (
+			"clock",
+			"Whole day",
+			"This card has no hourly breakdown; the hours window does not apply to it.",
+		),
+		"phases": (
+			"moon",
+			"Both phases",
+			"This card does not split by phase; the phase filter does not apply to it.",
+		),
+		"group_mean": (
+			"users",
+			"Per animal",
+			"Group mean does not apply here; this card shows one line per animal.",
+		),
+	}
+)
+_OPTION_LABELS = frozendict({"agg": "Aggregate", "edge_cutoff": "Hide edges below"})
 #: A control the recording has no use for is hidden, not dropped: its callbacks take it as an
 #: Input, and Dash throws on a callback whose inputs are only partly in the layout.
 _HIDDEN = {"display": "none"}
@@ -686,11 +688,13 @@ def _window_tiles(line: Timeline) -> list[tuple]:
 
 
 #: What each kind of recording gap means. A clean stop is not a failure.
-_GAP_KINDS = {
-	"abrupt_end": "Acquisition ended abruptly",
-	"observed_record_gap": "Nothing recorded, cause unknown",
-	"confirmed_DAQ_inactive": "Acquisition stopped and restarted cleanly",
-}
+_GAP_KINDS = frozendict(
+	{
+		"abrupt_end": "Acquisition ended abruptly",
+		"observed_record_gap": "Nothing recorded, cause unknown",
+		"confirmed_DAQ_inactive": "Acquisition stopped and restarted cleanly",
+	}
+)
 
 
 def _gaps(recording: Recording) -> list[tuple[dt.datetime, dt.datetime, str]]:

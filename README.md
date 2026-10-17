@@ -27,8 +27,7 @@ Then double-click the **DeepEcoHab** icon on your desktop. See
 
 ## Installation
 
-We keep DeepEcoHab lean to ensure easy integration and fast installation. In the
-spirit of open-source we build on [uv](https://docs.astral.sh/uv/) — a fast,
+We keep DeepEcoHab lean to ensure easy integration and fast installation. We build on [uv](https://docs.astral.sh/uv/) — a fast,
 self-contained Python package manager.
 
 ### Step 1 — Install `uv`
@@ -78,7 +77,7 @@ The app tells you when it starts if a newer version is out; **Update now** insta
 reopens the app. To update by hand instead, close the app and run:
 
 ```
-uv tool upgrade "deepecohab[app]"
+uv tool upgrade --python 3.15 "deepecohab[app]"
 ```
 
 ### Working from code instead

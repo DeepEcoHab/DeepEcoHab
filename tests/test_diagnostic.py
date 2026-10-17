@@ -6,6 +6,7 @@ flagged ``inserted``. Each animal's last read before the stop is at antenna 3 an
 first after at antenna 1, a step that would cross antenna 2 unread were it not a stop.
 """
 
+import copy
 import datetime as dt
 import json
 
@@ -94,7 +95,7 @@ def test_quality_counts_only_the_analysed_window(recording):
 
 	quality = build_recording_quality(recording, AnalysisParams()).collect()
 	unbounded = build_recording_quality(
-		recording.model_copy(update={"boundaries": []}), AnalysisParams()
+		copy.replace(recording, boundaries=[]), AnalysisParams()
 	).collect()
 
 	assert in_window["inserted"].any()

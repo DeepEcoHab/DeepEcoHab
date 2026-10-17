@@ -72,95 +72,120 @@ COLORBAR: dict = {
 	"title": {"side": "right"},  # to fix font color not applied from theme token
 }
 
-COLORSCALES: dict[str, list] = {
-	"Aurora": AURORA,
-	**{
-		name: px.colors.make_colorscale(getattr(px.colors.sequential, name))
-		for name in ("Viridis", "Cividis", "Plasma", "Inferno", "Magma", "Greys", "Blues", "YlOrRd")
-	},
-}
+COLORSCALES: frozendict[str, list] = frozendict(
+	{
+		"Aurora": AURORA,
+		**{
+			name: px.colors.make_colorscale(getattr(px.colors.sequential, name))
+			for name in (
+				"Viridis",
+				"Cividis",
+				"Plasma",
+				"Inferno",
+				"Magma",
+				"Greys",
+				"Blues",
+				"YlOrRd",
+			)
+		},
+	}
+)
 
-PALETTES: dict[str, list[str]] = {
-	name: px.colors.convert_colors_to_same_type(getattr(px.colors.qualitative, name), "rgb")[0]
-	for name in (
-		"Plotly",
-		"D3",
-		"T10",
-		"Set1",
-		"Set2",
-		"Dark2",
-		"Safe",
-		"Bold",
-		"Vivid",
-		"Dark24",
-		"Alphabet",
-	)
-}
+PALETTES: frozendict[str, list[str]] = frozendict(
+	{
+		name: px.colors.convert_colors_to_same_type(getattr(px.colors.qualitative, name), "rgb")[0]
+		for name in (
+			"Plotly",
+			"D3",
+			"T10",
+			"Set1",
+			"Set2",
+			"Dark2",
+			"Safe",
+			"Bold",
+			"Vivid",
+			"Dark24",
+			"Alphabet",
+		)
+	}
+)
 
 #: App design tokens the card surface shows through, so plots carry no background of
 #: their own. Values come from the blueprint's "Plot theme" spec, not the app's --ink /
 #: --grid CSS variables directly, since the hover label pair there differs from --surface.
-_TOKENS: dict[str, dict[str, str]] = {
-	"dark": {
-		"ink": "#e6eeed",
-		"ink2": "#a3b1b0",
-		"grid": "#212b2b",
-		"axis": "#374444",
-		"hover_bg": "#1c2525",
-		"hover_border": "#2c3838",
-		"dark_phase": "#7d8fae",
-		"light_phase": "#9b8347",
-	},
-	"light": {
-		"ink": "#14201f",
-		"ink2": "#4a5857",
-		"grid": "#e7ecec",
-		"axis": "#c9d2d2",
-		"hover_bg": "#ffffff",
-		"hover_border": "#dde3e3",
-		"dark_phase": "#5b6b85",
-		"light_phase": "#e2c27e",
-	},
-}
+_TOKENS: frozendict[str, frozendict[str, str]] = frozendict(
+	{
+		"dark": frozendict(
+			{
+				"ink": "#e6eeed",
+				"ink2": "#a3b1b0",
+				"grid": "#212b2b",
+				"axis": "#374444",
+				"hover_bg": "#1c2525",
+				"hover_border": "#2c3838",
+				"dark_phase": "#7d8fae",
+				"light_phase": "#9b8347",
+			}
+		),
+		"light": frozendict(
+			{
+				"ink": "#14201f",
+				"ink2": "#4a5857",
+				"grid": "#e7ecec",
+				"axis": "#c9d2d2",
+				"hover_bg": "#ffffff",
+				"hover_border": "#dde3e3",
+				"dark_phase": "#5b6b85",
+				"light_phase": "#e2c27e",
+			}
+		),
+	}
+)
 
 #: The phase band's two colours per theme, the same ``--tick-dark`` / ``--tick-light`` the
 #: hours slider paints its band with. A shape carries a literal colour, so a figure built
 #: for one theme has to be recoloured for the other - see :func:`apply`.
-PHASE_BAND: dict[str, dict[str, str]] = {
-	name: {phase: tokens[phase] for phase in ("dark_phase", "light_phase")}
-	for name, tokens in _TOKENS.items()
-}
+PHASE_BAND: frozendict[str, frozendict[str, str]] = frozendict(
+	{
+		name: frozendict({phase: tokens[phase] for phase in ("dark_phase", "light_phase")})
+		for name, tokens in _TOKENS.items()
+	}
+)
 
-CAGE_LOOKS: dict[str, list[tuple[str, str]]] = {
-	"light": [
-		("#ffffff", "#c9d2d2"),  # --surface, --line-strong
-		("#eef1f1", "#c9d2d2"),  # --sunken, --line-strong
-		("#e0f1f3", "#1a7f91"),  # --accent-soft, --accent
-		("#e0eaf6", "#3f7cc4"),  # --k-dim at 16%
-		("#d7dada", "#6f7c7b"),  # --ink-3 at 28%
-		("#a3ccd3", "#1a7f91"),  # --accent at 40%
-		("#b2cbe7", "#3f7cc4"),  # --k-dim at 40%
-		("#b0b7b6", "#4a5857"),  # --ink-3 at 55%, --ink-2
-	],
-	"dark": [
-		("#151c1c", "#344242"),
-		("#1c2525", "#344242"),
-		("#143238", "#45b5c8"),
-		("#24323c", "#72a4e4"),
-		("#323b3a", "#7b8988"),
-		("#285961", "#45b5c8"),
-		("#3a526c", "#72a4e4"),
-		("#4d5857", "#a3b1b0"),
-	],
-}
+CAGE_LOOKS: frozendict[str, tuple[tuple[str, str], ...]] = frozendict(
+	{
+		"light": (
+			("#ffffff", "#c9d2d2"),  # --surface, --line-strong
+			("#eef1f1", "#c9d2d2"),  # --sunken, --line-strong
+			("#e0f1f3", "#1a7f91"),  # --accent-soft, --accent
+			("#e0eaf6", "#3f7cc4"),  # --k-dim at 16%
+			("#d7dada", "#6f7c7b"),  # --ink-3 at 28%
+			("#a3ccd3", "#1a7f91"),  # --accent at 40%
+			("#b2cbe7", "#3f7cc4"),  # --k-dim at 40%
+			("#b0b7b6", "#4a5857"),  # --ink-3 at 55%, --ink-2
+		),
+		"dark": (
+			("#151c1c", "#344242"),
+			("#1c2525", "#344242"),
+			("#143238", "#45b5c8"),
+			("#24323c", "#72a4e4"),
+			("#323b3a", "#7b8988"),
+			("#285961", "#45b5c8"),
+			("#3a526c", "#72a4e4"),
+			("#4d5857", "#a3b1b0"),
+		),
+	}
+)
 
 #: The reads stack's colour per pass kind, matching the dark-theme antenna rings on the habitat
 #: map (--accent / --warn / --bad); mid-luminance, so shared by both themes.
-READ_LOOKS: dict[str, str] = {
-	"correct": "#45b5c8",
-	"interpolated": "#e6b04a",
-	"bad": "#f07a82",
-}
+READ_LOOKS: frozendict[str, str] = frozendict(
+	{
+		"correct": "#45b5c8",
+		"interpolated": "#e6b04a",
+		"bad": "#f07a82",
+	}
+)
 
 #: An event's lane colour by its place among the recording's events, the dark-theme
 #: --k-measure / --k-dim / --k-time and --ink-3; mid-luminance, so shared by both themes.
@@ -174,7 +199,7 @@ EVENT_TINT = "rgba(123, 137, 136, 0.16)"
 _DATA = {"scatter": [{"mode": "lines", "line": {"shape": "spline"}}]}
 
 
-def _template(tokens: dict[str, str]) -> go.layout.Template:
+def _template(tokens: frozendict[str, str]) -> go.layout.Template:
 	"""Build a card-surface template from one theme's tokens."""
 	axis = {
 		"gridcolor": "rgba(0,0,0,0)",  # tokens["grid"], decide whether to keep the grid or no

@@ -3,12 +3,14 @@ import math
 from collections import Counter, deque
 from collections.abc import Iterable, Sequence
 from html import escape
+from string.templatelib import Template, convert
 from typing import Any
 from urllib.parse import quote
 
 import dash
 import dash_mantine_components as dmc
 from dash import dcc, html
+lazy import networkx as nx
 
 from deepecohab.core.data_model import Layout
 from deepecohab.plotting import export as plot_export
@@ -508,10 +510,6 @@ def _habitat_positions(layout: Layout) -> dict[str, tuple[float, float]]:
 	Returns:
 		Centre ``(x, y)`` per ``cell_id``, in the same units as ``_HAB_W``.
 	"""
-	# Imported here rather than at module scope: networkx costs ~150ms to import, and the
-	# habitat map is the only thing in the app that needs it.
-	import networkx as nx
-
 	declared = [cage.cell_id for cage in layout.cages]
 	if not declared:
 		return {}
@@ -594,6 +592,24 @@ def _look_vars(look: int) -> dict[str, str]:
 	}
 
 
+def _markup(template: Template) -> str:
+	"""``template`` as markup: every interpolated value escaped, nested templates kept as markup.
+
+	A value may be a template, or a list of them, to nest markup built elsewhere.
+	"""
+	parts = []
+	for part in template:
+		if isinstance(part, str):
+			parts.append(part)
+		elif isinstance(part.value, Template):
+			parts.append(_markup(part.value))
+		elif isinstance(part.value, list):
+			parts += [_markup(item) for item in part.value]
+		else:
+			parts.append(escape(format(convert(part.value, part.conversion), part.format_spec)))
+	return "".join(parts)
+
+
 def _antenna_pop(title: str, stats: dict | None) -> str:
 	"""An antenna's popover body, escaped, for ``deh`` to set as the popover's innerHTML."""
 	rows = (
@@ -606,16 +622,15 @@ def _antenna_pop(title: str, stats: dict | None) -> str:
 		if stats
 		else ()
 	)
-	return f"<b>{escape(title)}</b>" + "".join(
-		f"<span>{name}</span><span>{value}</span>" for name, value in rows
-	)
+	cells = [t"<span>{name}</span><span>{value}</span>" for name, value in rows]
+	return _markup(t"<b>{title}</b>{cells}")
 
 
 def _habitat_svg(layout: Layout, label: str, antenna_stats: dict[str, dict] | None) -> str:
 	"""The habitat as one SVG element, for ``deh.paintHabitat`` to paint in.
 
 	Every interpolated piece comes from a hand-editable ``config.json`` and this string is
-	set as ``innerHTML``, so all of it is escaped.
+	set as ``innerHTML``, so it is built from t-strings that :func:`_markup` escapes.
 	"""
 	at = _habitat_positions(layout)
 	cages = {cage.cell_id: cage for cage in layout.cages}
@@ -630,11 +645,11 @@ def _habitat_svg(layout: Layout, label: str, antenna_stats: dict[str, dict] | No
 		bx, by = at[tunnel.end_cell_id]
 		line = f"M{ax:.2f} {ay:.2f} L{bx:.2f} {by:.2f}"
 		tubes.append(
-			f'<path class="deh-hab-tube" d="{line}"/><path class="deh-hab-tube-in" d="{line}"/>'
+			t'<path class="deh-hab-tube" d="{line}"/><path class="deh-hab-tube-in" d="{line}"/>'
 		)
 		labels.append(
-			f'<text class="deh-hab-tunnel" x="{(ax + bx) / 2:.2f}" '
-			f'y="{(ay + by) / 2 + 3.5:.2f}">T{tunnel.tunnel_no}</text>'
+			t'<text class="deh-hab-tunnel" x="{(ax + bx) / 2:.2f}" '
+			t'y="{(ay + by) / 2 + 3.5:.2f}">T{tunnel.tunnel_no}</text>'
 		)
 		# zip stops at the shorter side, which is what leaves a dead-end tunnel with the
 		# one antenna it has.
@@ -647,11 +662,10 @@ def _habitat_svg(layout: Layout, label: str, antenna_stats: dict[str, dict] | No
 			band = _habitat_band(stats["miss"] if stats else None)
 			title = f"Antenna {antenna} · {cages[cell].name} end of {tunnel.name}"
 			antennas.append(
-				f'<g class="deh-hab-ant{f" {band}" if band else ""}" tabindex="0" '
-				f'role="button" aria-label="{escape(title)}" '
-				f'data-pop="{escape(_antenna_pop(title, stats))}">'
-				f'<circle cx="{px:.2f}" cy="{py:.2f}" r="11"/>'
-				f'<text x="{px:.2f}" y="{py:.2f}">{escape(str(antenna))}</text></g>'
+				t'<g class="deh-hab-ant{f" {band}" if band else ""}" tabindex="0" '
+				t'role="button" aria-label="{title}" data-pop="{_antenna_pop(title, stats)}">'
+				t'<circle cx="{px:.2f}" cy="{py:.2f}" r="11"/>'
+				t'<text x="{px:.2f}" y="{py:.2f}">{antenna}</text></g>'
 			)
 
 	# Drawn last, so a cage box covers any antenna that falls inside it.
@@ -660,24 +674,24 @@ def _habitat_svg(layout: Layout, label: str, antenna_stats: dict[str, dict] | No
 		x, y = at[cage.cell_id]
 		title = f"{cage.name} · {cage.cage_type} · antennas {', '.join(cage.antennas)}"
 		boxes.append(
-			f'<g class="deh-hab-cage" style="{looks[cage.cage_type]}">'
-			f"<title>{escape(title)}</title>"
-			f'<rect x="{x - _HAB_W / 2:.2f}" y="{y - _HAB_H / 2:.2f}" '
-			f'width="{_HAB_W}" height="{_HAB_H}" rx="13"/>'
-			f'<text class="deh-hab-name" x="{x:.2f}" y="{y - 2:.2f}">'
-			f"{escape(cage.name.replace('cage_', 'Cage '))}</text>"
-			f'<text class="deh-hab-type" x="{x:.2f}" y="{y + 15:.2f}">'
-			f"{escape(cage.cage_type)}</text></g>"
+			t'<g class="deh-hab-cage" style="{looks[cage.cage_type]}">'
+			t"<title>{title}</title>"
+			t'<rect x="{x - _HAB_W / 2:.2f}" y="{y - _HAB_H / 2:.2f}" '
+			t'width="{_HAB_W}" height="{_HAB_H}" rx="13"/>'
+			t'<text class="deh-hab-name" x="{x:.2f}" y="{y - 2:.2f}">'
+			t"{cage.name.replace('cage_', 'Cage ')}</text>"
+			t'<text class="deh-hab-type" x="{x:.2f}" y="{y + 15:.2f}">'
+			t"{cage.cage_type}</text></g>"
 		)
 
 	xs = [x for x, _ in at.values()]
 	ys = [y for _, y in at.values()]
 	x0, y0 = min(xs) - _HAB_W / 2 - 40, min(ys) - _HAB_H / 2 - 40
-	return (
-		f'<svg viewBox="{x0:.2f} {y0:.2f} {max(xs) + _HAB_W / 2 + 40 - x0:.2f} '
-		f'{max(ys) + _HAB_H / 2 + 40 - y0:.2f}" role="img" aria-label="{escape(label)}" '
-		f'preserveAspectRatio="xMidYMid meet">'
-		f"{''.join(tubes)}{''.join(antennas)}{''.join(labels)}{''.join(boxes)}</svg>"
+	return _markup(
+		t'<svg viewBox="{x0:.2f} {y0:.2f} {max(xs) + _HAB_W / 2 + 40 - x0:.2f} '
+		t'{max(ys) + _HAB_H / 2 + 40 - y0:.2f}" role="img" aria-label="{label}" '
+		t'preserveAspectRatio="xMidYMid meet">'
+		t"{tubes}{antennas}{labels}{boxes}</svg>"
 	)
 
 

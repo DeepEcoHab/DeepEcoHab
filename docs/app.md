@@ -50,7 +50,7 @@ The button is offered when DeepEcoHab was installed with `uv tool install`. Othe
 or to update by hand, close the app and run:
 
 ```
-uv tool upgrade "deepecohab[app]"
+uv tool upgrade --python 3.15 "deepecohab[app]"
 ```
 
 ```{figure} images/app/projects-empty.png

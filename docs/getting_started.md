@@ -21,7 +21,7 @@ Organise your recordings into a project, then analyze them step by step or run t
 
 ## Installation
 
-DeepEcoHab requires Python 3.12 or newer. In the spirit of open-source we recommend the [uv](https://docs.astral.sh/uv/) package and project manager to work with deepecohab.
+DeepEcoHab requires Python 3.15 or newer. In the spirit of open-source we recommend the [uv](https://docs.astral.sh/uv/) package and project manager to work with deepecohab. uv installs Python for you; if you already have uv, run `uv self update` first, as an older uv only knows the 3.15 pre-releases.
 
 ### Step 1 — Install `uv`
 
@@ -66,7 +66,7 @@ The app tells you when it starts if a newer version is out; **Update now** insta
 reopens the app. To update by hand instead, close the app and run:
 
 ```
-uv tool upgrade "deepecohab[app]"
+uv tool upgrade --python 3.15 "deepecohab[app]"
 ```
 
 ### Working from code instead

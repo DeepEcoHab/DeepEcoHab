@@ -1,5 +1,5 @@
 import copy
-import time
+import uuid
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -34,42 +34,48 @@ dash.register_page(__name__, path=PATH, name="Plot builder", order=2, icon="drag
 #: Pseudo-shelves: the palette takes chips back, the filter rail turns them into controls.
 PALETTE, FILTERS = "__palette__", "__filters__"
 
-KIND_ICON = {"measure": "hash", "dimension": "tag", "time": "arrows-sort"}
+KIND_ICON = frozendict({"measure": "hash", "dimension": "tag", "time": "arrows-sort"})
 GROUP_ORDER = ["Measure", "Time", "Position", "Events", "Animal", "Recording"]
-GROUP_ICON = {
-	"Measure": "hash",
-	"Time": "clock",
-	"Position": "map-pin",
-	"Events": "bolt",
-	"Animal": "paw",
-	"Recording": "file-description",
-}
-PLOT_ICON = {
-	"line": "chart-line",
-	"scatter": "chart-dots",
-	"bar": "chart-bar",
-	"area": "chart-area",
-	"box": "chart-candle",
-	"violin": "chart-dots-2",
-	"strip": "chart-dots-3",
-	"histogram": "chart-histogram",
-	"ecdf": "stairs",
-	"heatmap": "chart-grid-dots",
-	"scatter_polar": "chart-radar",
-	"line_polar": "chart-radar",
-	"bar_polar": "chart-donut",
-	"sunburst": "chart-pie",
-	"treemap": "chart-treemap",
-}
+GROUP_ICON = frozendict(
+	{
+		"Measure": "hash",
+		"Time": "clock",
+		"Position": "map-pin",
+		"Events": "bolt",
+		"Animal": "paw",
+		"Recording": "file-description",
+	}
+)
+PLOT_ICON = frozendict(
+	{
+		"line": "chart-line",
+		"scatter": "chart-dots",
+		"bar": "chart-bar",
+		"area": "chart-area",
+		"box": "chart-candle",
+		"violin": "chart-dots-2",
+		"strip": "chart-dots-3",
+		"histogram": "chart-histogram",
+		"ecdf": "stairs",
+		"heatmap": "chart-grid-dots",
+		"scatter_polar": "chart-radar",
+		"line_polar": "chart-radar",
+		"bar_polar": "chart-donut",
+		"sunburst": "chart-pie",
+		"treemap": "chart-treemap",
+	}
+)
 #: Numeric time fields that offer a Range | Pick values toggle; others (age_days) are
 #: range-only, and every dimension field is pick-only.
 PICKABLE = frozenset({"day", "phase_count", "hour", "n_mice"})
 
-_SCOPE = {
-	"built-in": ("template", "built in"),
-	"browser": ("bookmark", "saved in this browser"),
-	"project": ("folders", "saved in project"),
-}
+_SCOPE = frozendict(
+	{
+		"built-in": ("template", "built in"),
+		"browser": ("bookmark", "saved in this browser"),
+		"project": ("folders", "saved in project"),
+	}
+)
 
 layout = html.Div(
 	[
@@ -250,7 +256,7 @@ def _drop_unshelved_bins(state: dict) -> None:
 	plot type with fewer shelves - so a spec left behind by any of them cannot come back
 	to life under the field when it is dropped again.
 	"""
-	held = {name for names in state["channels"].values() for name in names}
+	held = {*names for names in state["channels"].values()}
 	if catalog.AGE not in held:
 		state.pop("age_unit", None)
 	bins = {name: spec for name, spec in state.get("bins", {}).items() if name in held}
@@ -1455,7 +1461,7 @@ def _save_preset_modal(
 		return True, no_update, error, no_update, no_update, no_update
 
 	preset = {
-		"id": f"saved-{int(time.time() * 1000)}",
+		"id": f"saved-{uuid.uuid7()}",
 		"name": name,
 		"description": (description or "").strip(),
 		"state": state,

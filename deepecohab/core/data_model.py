@@ -1,14 +1,14 @@
+import copy
 import datetime as dt
 import graphlib
 import json
 import logging
-import queue
 import shutil
 import threading
 import warnings
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from itertools import combinations, pairwise, permutations
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Final, Literal, NamedTuple, overload
@@ -28,9 +28,11 @@ from pydantic import (
 	field_serializer,
 	model_validator,
 )
-from tqdm.auto import tqdm
+lazy from tqdm.auto import tqdm
 
 from deepecohab.core import topology
+lazy from deepecohab.core.antenna_analysis import get_prev_ranking
+lazy from deepecohab.core.recording_pipeline import event_status
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -95,7 +97,7 @@ class Layout(BaseModel):
 	tunnels_map: dict[str, str]
 
 	@model_validator(mode="after")
-	def _check_positions(self) -> "Layout":
+	def _check_positions(self) -> Layout:
 		"""Every position the maps can name has to be a place this layout holds.
 
 		``reindex_onto_grid`` joins on ``positions_non_directional``, so a position that
@@ -215,7 +217,7 @@ class Timeline(BaseModel):
 	end_with: Literal["light_phase", "dark_phase"]
 
 	@model_validator(mode="after")
-	def _check_timeline(self) -> "Timeline":
+	def _check_timeline(self) -> Timeline:
 		if self.end_datetime <= self.start_datetime:
 			raise ValueError("end_datetime must be after start_datetime")
 
@@ -362,7 +364,7 @@ class Bout(BaseModel):
 	position: list[str] | None = Field(default=None, min_length=1)
 
 	@model_validator(mode="after")
-	def _check_bout(self) -> "Bout":
+	def _check_bout(self) -> Bout:
 		if self.end <= self.start:
 			raise ValueError(f"a bout must end after it starts, got {self.start} to {self.end}")
 		return self
@@ -384,7 +386,7 @@ class Event(BaseModel):
 	devices: list[str] | None = Field(default=None, min_length=1)
 
 	@model_validator(mode="after")
-	def _check_event(self) -> "Event":
+	def _check_event(self) -> Event:
 		ordered = sorted(self.bouts, key=lambda bout: bout.start)
 		for earlier, later in pairwise(ordered):
 			if later.start < earlier.end:
@@ -412,7 +414,7 @@ class Device(BaseModel):
 	TTL_port: NonEmptyStr | None = None
 
 	@model_validator(mode="after")
-	def _check_device(self) -> "Device":
+	def _check_device(self) -> Device:
 		if self.antenna is None and self.TTL_port is None:
 			raise ValueError(f"device {self.name!r} needs an antenna, a TTL_port or both")
 		return self
@@ -433,7 +435,7 @@ class Boundary(BaseModel):
 	kind: Literal["observed_record_gap", "confirmed_DAQ_inactive", "abrupt_end"]
 
 	@model_validator(mode="after")
-	def _check_boundary(self) -> "Boundary":
+	def _check_boundary(self) -> Boundary:
 		if self.end <= self.start:
 			raise ValueError(f"a boundary must end after it starts, got {self.start} to {self.end}")
 		return self
@@ -463,7 +465,10 @@ class AnalysisParams(BaseModel):
 
 
 class Progress(NamedTuple):
-	"""One finished pipeline step, tagged with the recording it came from."""
+	"""One finished pipeline step, tagged with the recording it came from.
+
+	``step_index`` counts that recording's finished steps, this one included.
+	"""
 
 	recording: str
 	step: str
@@ -478,7 +483,7 @@ class DataFrameRegistry:
 	is a plain ``(recording, params) -> LazyFrame``.
 	"""
 
-	_builders: ClassVar[dict[str, Callable[["Recording", AnalysisParams], pl.LazyFrame]]] = {}
+	_builders: ClassVar[dict[str, Callable[[Recording, AnalysisParams], pl.LazyFrame]]] = {}
 	_requires: ClassVar[dict[str, list[str]]] = {}
 
 	@classmethod
@@ -521,7 +526,7 @@ class DataFrameRegistry:
 			KeyError: a target, or a declared requirement, is not registered.
 			ValueError: the requirements form a cycle.
 		"""
-		unknown = {req for reqs in cls._requires.values() for req in reqs} - set(cls._builders)
+		unknown = {*reqs for reqs in cls._requires.values()} - set(cls._builders)
 		if unknown:
 			raise KeyError(
 				f"Steps declare requirements that no step produces: {sorted(unknown)}. "
@@ -553,37 +558,19 @@ class DataFrameRegistry:
 			) from None
 
 	@classmethod
-	def run(
-		cls,
-		recording: "Recording",
-		params: AnalysisParams | None = None,
-		targets: list[str] | None = None,
-		*,
-		overwrite: bool = False,
-	) -> Iterator[str]:
-		"""Build every step of one recording in dependency order, yielding each as it lands.
+	def build(
+		cls, recording: Recording, name: str, params: AnalysisParams, *, overwrite: bool = False
+	) -> None:
+		"""Build one step's table, unless its parquet is already there and ``overwrite`` is off.
 
-		A step whose parquet is already there is skipped, but still yielded.
-
-		Args:
-			recording: the recording whose tables are built.
-			params: tuning knobs; defaults are used when omitted.
-			targets: run only these steps and their dependencies.
-			overwrite: rebuild steps whose parquet already exists.
-
-		Yields:
-			The name of each finished step.
+		The steps it requires must have landed first; :meth:`Project.iter_analysis` sees to it.
 		"""
-		params = params or AnalysisParams()
-
-		for name in cls.step_order(targets):
-			path = recording.results_path / f"{name}.parquet"
-			if overwrite or not path.is_file():
-				path.parent.mkdir(parents=True, exist_ok=True)
-				cls._builders[name](recording, params).sink_parquet(
-					path, compression="lz4", engine="streaming"
-				)
-			yield name
+		path = recording.results_path / f"{name}.parquet"
+		if overwrite or not path.is_file():
+			path.parent.mkdir(parents=True, exist_ok=True)
+			cls._builders[name](recording, params).sink_parquet(
+				path, compression="lz4", engine="streaming"
+			)
 
 
 def recording_status(root: Path) -> dict[str, bool]:
@@ -729,9 +716,6 @@ class Recording(BaseModel):
 			ValueError: ``ranking`` lacks a rating column, or holds animals that are not in
 				this cohort.
 		"""
-		# Deferred: antenna_analysis imports this module.
-		from deepecohab.core.antenna_analysis import get_prev_ranking
-
 		path = self.root / self.PREV_RANKING
 		if ranking is None:
 			path.unlink(missing_ok=True)
@@ -746,7 +730,7 @@ class Recording(BaseModel):
 		ratings.write_parquet(path)
 
 	@classmethod
-	def from_config(cls, config: dict[str, Any], data_path: Path) -> "Recording":
+	def from_config(cls, config: dict[str, Any], data_path: Path) -> Recording:
 		"""Rebuild a recording from its config.json contents, reattaching its parquet."""
 		return cls.model_validate(config, context={"data_path": data_path})
 
@@ -759,7 +743,7 @@ class Recording(BaseModel):
 		return values
 
 	@model_validator(mode="after")
-	def _check_schema(self, info: ValidationInfo) -> "Recording":
+	def _check_schema(self, info: ValidationInfo) -> Recording:
 		path = Path((info.context or {}).get("data_path", "<data>")).name
 		found = self.data.collect_schema()
 		required = self.data_schema
@@ -780,7 +764,7 @@ class Recording(BaseModel):
 		return self
 
 	@model_validator(mode="after")
-	def _check_antennas(self, info: ValidationInfo) -> "Recording":
+	def _check_antennas(self, info: ValidationInfo) -> Recording:
 		"""Every antenna the data reads has to be one this layout names.
 
 		``transforms.get_animal_position`` resolves a pair the layout does not name to
@@ -802,7 +786,7 @@ class Recording(BaseModel):
 		return self
 
 	@model_validator(mode="after")
-	def _check_events(self) -> "Recording":
+	def _check_events(self) -> Recording:
 		names = [event.name for event in self.events]
 		if duplicates := sorted({name for name in names if names.count(name) > 1}):
 			raise ValueError(f"event names must be unique, got duplicates of {duplicates}")
@@ -826,16 +810,15 @@ class Recording(BaseModel):
 		return self
 
 	@model_validator(mode="after")
-	def _localize_boundaries(self) -> "Recording":
+	def _localize_boundaries(self) -> Recording:
 		"""Boundaries in the recording's zone, in order: polars compares datetimes of one zone."""
 		zone = self.timeline.recording_timezone
 		self.boundaries = sorted(
 			(
-				boundary.model_copy(
-					update={
-						"start": boundary.start.astimezone(zone),
-						"end": boundary.end.astimezone(zone),
-					}
+				copy.replace(
+					boundary,
+					start=boundary.start.astimezone(zone),
+					end=boundary.end.astimezone(zone),
 				)
 				for boundary in self.boundaries
 			),
@@ -844,7 +827,7 @@ class Recording(BaseModel):
 		return self
 
 	@model_validator(mode="after")
-	def _check_devices(self) -> "Recording":
+	def _check_devices(self) -> Recording:
 		names = [device.name for device in self.devices]
 		if duplicates := sorted({name for name in names if names.count(name) > 1}):
 			raise ValueError(f"device names must be unique, got duplicates of {duplicates}")
@@ -870,11 +853,13 @@ class Recording(BaseModel):
 #: whether it is required. The config is validated into ``config.json`` and the data into
 #: ``raw/data.parquet``; every other file, the config as uploaded included, is kept as is in
 #: ``raw/``.
-RECORDING_FILES: Final[dict[str, bool]] = {
-	"config.json": True,
-	"data.parquet": True,
-	"diagnostic.json": True,
-}
+RECORDING_FILES: Final = frozendict(
+	{
+		"config.json": True,
+		"data.parquet": True,
+		"diagnostic.json": True,
+	}
+)
 
 
 class Diagnostic(BaseModel):
@@ -1003,7 +988,7 @@ class Project(BaseModel):
 		experimenter: str,
 		location: Path,
 		description: str = "",
-	) -> "Project":
+	) -> Project:
 		"""Creates the project in a project_name folder inside location and writes its manifest."""
 		location = (Path(location).expanduser() / project_name).resolve()
 		location.mkdir(parents=True, exist_ok=True)
@@ -1024,7 +1009,7 @@ class Project(BaseModel):
 		return project
 
 	@classmethod
-	def load(cls, location: Path) -> "Project":
+	def load(cls, location: Path) -> Project:
 		"""Reopen a project written by _save(), following the manifest's pointers."""
 		location = Path(location).expanduser().resolve()
 		raw = json.loads((location / cls.MANIFEST).read_text(encoding="utf-8"))
@@ -1048,7 +1033,7 @@ class Project(BaseModel):
 				handler.close()
 			self._logger = None
 
-	def __enter__(self) -> "Project":
+	def __enter__(self) -> Project:
 		return self
 
 	def __exit__(self, *exc_info: object) -> None:
@@ -1254,8 +1239,8 @@ class Project(BaseModel):
 			names: run only these recordings; ``None`` runs all of them.
 			targets: run only these steps and their dependencies.
 			overwrite: rebuild tables that already exist on disk.
-			workers: how many recordings to analyse at once; ``None`` takes a quarter
-				of polars' thread pool, capped at the number of recordings.
+			workers: how many steps to build at once; ``None`` takes half of polars'
+				thread pool, see :meth:`iter_analysis`.
 		"""
 		# Exact, not an estimate: a step that is skipped still reports itself.
 		total = len(self._select(names)) * len(DataFrameRegistry.step_order(targets))
@@ -1296,9 +1281,6 @@ class Project(BaseModel):
 		Returns:
 			The table, which is also written to ``project_table.parquet``.
 		"""
-		# Deferred: recording_pipeline imports grids, which imports this module.
-		from deepecohab.core.recording_pipeline import event_status
-
 		recordings = self._select(names)
 		if not recordings:
 			raise ValueError(f"Project {self.project_name!r} has no recordings to aggregate.")
@@ -1375,65 +1357,78 @@ class Project(BaseModel):
 	) -> Iterator[Progress]:
 		"""Run the pipeline across recordings as one flat event stream.
 
-		Recordings are analysed side by side, sharing nothing but the read-only step graph,
-		so events arrive interleaved, each tagged with the recording it came from. One
-		recording's own steps stay in dependency order.
+		Every step of every recording goes to one pool as soon as the steps it requires
+		have landed, so independent steps - of one recording or of several - build side by
+		side. Events arrive in the order steps finish, each tagged with its recording and
+		with how many of that recording's steps have finished; a step never arrives before
+		the steps it requires.
 
 		A recording that raises does not stop the others; the error surfaces here once the
 		rest have finished, as it does in :meth:`add_recordings`.
 
 		Args:
-			workers: how many recordings to analyse at once; ``None`` takes a quarter
-				of polars' thread pool, capped at the number of recordings.
-			cancel: once set, every recording stops before its next step, so the steps in
-				flight still land and recordings not yet started never begin.
+			workers: how many steps to build at once; ``None`` takes half of polars'
+				thread pool. Polars already spreads every step over all cores, so the gain
+				comes from the serial parts between them, while each step in flight adds
+				its own peak memory.
+			cancel: once set, no further step starts, so the steps in flight still land and
+				recordings not yet started never begin.
 		"""
 		recordings = self._select(names)
 		if not recordings:
 			return
 
-		workers = workers or min(len(recordings), max(1, pl.thread_pool_size() // 4))
+		params = params or AnalysisParams()
+		order = DataFrameRegistry.step_order(targets)
+		workers = workers or max(1, pl.thread_pool_size() // 2)
 		cancel = cancel or threading.Event()
 
-		# An executor reports whole recordings, so workers hand back steps as they land.
-		events: queue.Queue[Progress | None] = queue.Queue()
+		# Largest first: the biggest recording sets the run's length, so its steps must not
+		# queue behind the small ones for a worker.
+		largest_first = sorted(
+			recordings, key=lambda r: (r.root / "raw" / "data.parquet").stat().st_size, reverse=True
+		)
+		queued = [(recording, step) for recording in largest_first for step in order]
+		done: dict[str, set[str]] = {recording.name: set() for recording in recordings}
+		running: dict[Future, tuple[Recording, str]] = {}
+		failures: list[BaseException] = []
 
-		def analyse(recording: Recording) -> None:
-			# Lazy: each next() builds one step, so the check runs before every build.
-			steps = enumerate(
-				DataFrameRegistry.run(recording, params, targets, overwrite=overwrite), start=1
-			)
-			try:
-				while not cancel.is_set() and (step := next(steps, None)) is not None:
-					index, name = step
-					events.put(Progress(recording.name, name, index))
-			finally:
-				events.put(None)  # this recording is done, however it ended
+		def ready(recording: Recording, step: str) -> bool:
+			return set(DataFrameRegistry._requires[step]) <= done[recording.name]
 
-		# Abandoning the generator without setting cancel blocks until every recording
-		# finishes.
+		# Abandoning the generator finishes only the steps in flight.
 		with ThreadPoolExecutor(workers) as pool:
-			futures = [pool.submit(analyse, recording) for recording in recordings]
-			pending = len(futures)
+			while True:
+				if not cancel.is_set():
+					for item in [item for item in queued if ready(*item)][: workers - len(running)]:
+						queued.remove(item)
+						recording, step = item
+						future = pool.submit(
+							DataFrameRegistry.build, recording, step, params, overwrite=overwrite
+						)
+						running[future] = item
+				if not running:
+					break
 
-			# Logging stays on this side: the workers only emit events, so the lazily attached
-			# file handler is never raced for.
-			while pending:
-				if (event := events.get()) is None:
-					pending -= 1
-				else:
-					self.log.info("%s: built %s", event.recording, event.step)
-					yield event
-			if cancel.is_set():
-				self.log.warning("cancelled; steps in flight finished")
+				finished, _ = wait(running, return_when=FIRST_COMPLETED)
+				for future in finished:
+					recording, step = running.pop(future)
+					if (error := future.exception()) is not None:
+						failures.append(error)
+						queued = [item for item in queued if item[0] is not recording]
+						continue
+					done[recording.name].add(step)
+					# Logged on this side, so the lazily attached file handler is never raced.
+					self.log.info("%s: built %s", recording.name, step)
+					yield Progress(recording.name, step, len(done[recording.name]))
 
-			for future in futures:
-				try:
-					future.result()  # a worker that raised does so here
-				except Exception:
-					# Callers show one line of this and drop the rest; the log keeps all of it.
-					self.log.exception("analysis failed")
-					raise
+		if cancel.is_set():
+			self.log.warning("cancelled; steps in flight finished")
+		if failures:
+			# Callers show one line of this and drop the rest; the log keeps all of it.
+			for error in failures:
+				self.log.error("analysis failed", exc_info=error)
+			raise failures[0]
 
 	def event_names(self, names: Iterable[str] | None = None) -> list[str]:
 		"""Every event name the recordings declare, plus "Any event"; empty when they declare none.
@@ -1485,7 +1480,7 @@ class Project(BaseModel):
 			(root / self.CONFIG).write_text(recording.model_dump_json(indent=2), encoding="utf-8")
 			for suffix, path in files.items():
 				if suffix != "data.parquet":
-					shutil.copyfile(path, root / "raw" / suffix)
+					path.copy(root / "raw" / suffix)
 		except Exception:
 			shutil.rmtree(root, ignore_errors=True)  # only ours; the old one is aside
 			if previous:

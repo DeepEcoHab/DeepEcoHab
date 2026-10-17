@@ -204,7 +204,7 @@ def export_plot():
 	try:
 		figure = json.loads(request.form["figure"])
 		form = json.loads(request.form["params"])
-	except (KeyError, ValueError):
+	except KeyError, ValueError:
 		abort(400, "Malformed export request.")
 
 	fig = styled(figure, form.get("style", ""))

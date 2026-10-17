@@ -7,11 +7,11 @@ plotting.
 """
 
 import base64
+import copy
 import datetime as dt
 import json
 import subprocess
 import sys
-from dataclasses import replace
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -184,12 +184,58 @@ def scoped_proportion(context, scope, rows, phase_seconds: float = 100.0) -> flo
 			"duration": pl.Series([dt.timedelta(seconds=phase_seconds)], dtype=pl.Duration("us")),
 		}
 	)
-	scoped = replace(
+	time_grid = pairwise.select("phase", "day", "phase_count", "hour").unique()
+	scoped = copy.replace(
 		context,
-		_loaded={"pairwise_meetings": pairwise, "phase_durations": phase_durations},
+		_loaded={
+			"pairwise_meetings": pairwise,
+			"phase_durations": phase_durations,
+			"time_grid": time_grid,
+		},
 	)
 
-	return prepare._proportion_together(scoped, scope).collect()["proportion_together"].item()
+	return (
+		prepare._proportion_together(scoped, scope)
+		.filter(pl.col("animal_id") == ANIMALS[0], pl.col("animal_id_2") == ANIMALS[1])
+		.collect()["proportion_together"]
+		.item()
+	)
+
+
+def test_a_mean_over_days_counts_the_days_with_no_chasing(context):
+	"""chasings_df stores only the cells a chase happened in; the empty days are zeros."""
+	phase_enum = pl.Enum(["light_phase", "dark_phase"])
+	time_grid = pl.DataFrame(
+		{
+			"phase": pl.Series(["light_phase"] * 3, dtype=phase_enum),
+			"day": pl.Series([1, 2, 3], dtype=pl.UInt16),
+			"phase_count": pl.Series([1, 3, 5], dtype=pl.UInt16),
+			"hour": pl.Series([12] * 3, dtype=pl.UInt8),
+		}
+	)
+	chasings = time_grid.head(1).with_columns(
+		chaser=pl.Series([ANIMALS[0]], dtype=pl.Enum(ANIMALS)),
+		chased=pl.Series([ANIMALS[1]], dtype=pl.Enum(ANIMALS)),
+		position=pl.Series(["tunnel_1_a"], dtype=pl.Categorical),
+		chasings=pl.Series([6], dtype=pl.UInt32),
+	)
+	sparse = copy.replace(context, _loaded={"chasings_df": chasings, "time_grid": time_grid})
+
+	matrix = prepare.prep_directed_heatmap(
+		sparse,
+		(1, 3),
+		["light_phase"],
+		"mean",
+		"day",
+		list(ANIMALS),
+		"chasings_df",
+		"chasings",
+		"chaser",
+		"chased",
+	)
+
+	assert matrix[1, 0] == pytest.approx(2.0)  # 6 chases over 3 days, row chased, column chaser
+	assert matrix[0, 1] == 0
 
 
 def test_tunnels_are_the_positions_that_are_neither_cages_nor_undefined(context):
@@ -231,7 +277,7 @@ def test_activity_scope_keeps_undefined_only_at_all(context, scope, expected):
 			"time_in_position": pl.Series([dt.timedelta(seconds=10)] * 3, dtype=pl.Duration("us")),
 		}
 	)
-	scoped = replace(context, _loaded={**context._loaded, "activity_df": activity_df})
+	scoped = copy.replace(context, _loaded={**context._loaded, "activity_df": activity_df})
 
 	figure = PlotRegistry.build("activity-bar", scoped, scope=scope)
 
@@ -253,7 +299,7 @@ def test_position_ticks_name_their_own_bars(context, plot, agg):
 			"time_alone": pl.Series([dt.timedelta(seconds=1)] * 2, dtype=pl.Duration("us")),
 		}
 	)
-	scoped = replace(
+	scoped = copy.replace(
 		context,
 		cages=["cage_1"],
 		positions=["cage_1", "T1", "undefined"],
@@ -407,7 +453,7 @@ def test_labelling_by_subject_renames_without_recolouring(context):
 def test_a_shared_subject_name_keeps_its_rows_apart(context):
 	"""A repeated axis label would merge two animals' heatmap rows into one."""
 	cohort = context.animals.with_columns(subject_name=pl.Series(["m1", "m1", "m3", "m4"]))
-	shared = replace(context, _loaded={**context._loaded, "animals": cohort})
+	shared = copy.replace(context, _loaded={**context._loaded, "animals": cohort})
 
 	assert animals_module.animal_labels(shared, "subject_name") == [
 		"m1 (0035A)",
@@ -486,6 +532,17 @@ def test_literal_and_resolver_on_one_option_is_rejected(clean_registry):
 		def broken(context, *, mode: Literal["a", "b"] = "a") -> Figure:
 			"""Broken."""
 			return Figure()
+
+
+def test_type_only_annotation_does_not_block_registration(clean_registry):
+	"""A builder may annotate with a name imported only for type checking."""
+
+	@clean_registry.register("demo", title="Demo", info="", requires=())
+	def demo(context: TypeOnlyContext, *, mode: Literal["a", "b"] = "a") -> Figure:  # noqa: F821
+		"""Demo."""
+		return Figure()
+
+	assert clean_registry.spec("demo").options[0].choices == ("a", "b")
 
 
 def test_resolved_default_reaches_the_builder(clean_registry, context):
@@ -585,7 +642,7 @@ def test_hours_range_narrows_the_hourly_scaffold(context):
 		}
 	)
 
-	with_table = replace(context, _loaded={"t": frame})
+	with_table = copy.replace(context, _loaded={"t": frame})
 	full = prepare.prep_count_line(with_table, (1, 1), "day", "hour", "t", "animal_id", pl.len())
 	narrowed = prepare.prep_count_line(
 		with_table, (1, 1), "day", "hour", "t", "animal_id", pl.len(), hours_range=(3, 6)
@@ -605,7 +662,7 @@ def test_count_line_along_days_folds_the_hours_away(context):
 		}
 	)
 
-	with_table = replace(context, _loaded={"t": frame})
+	with_table = copy.replace(context, _loaded={"t": frame})
 	line = prepare.prep_count_line(
 		with_table, (1, 2), "day", "day", "t", "animal_id", pl.len(), hours_range=(5, 6)
 	).filter(pl.col("animal_id") == "0035A")
@@ -663,7 +720,7 @@ def test_polar_z_scores_within_the_selection_however_it_is_narrowed(context):
 		* (1 + (pl.col("animal_id") == "0035B")),
 		exposure=pl.lit(1.0),
 	)
-	with_table = replace(context, _loaded={"feature_df": frame})
+	with_table = copy.replace(context, _loaded={"feature_df": frame})
 	phases = ["light_phase", "dark_phase"]
 
 	by_phase = prepare.prep_polar(with_table, (1, 1), ["dark_phase"], "day")
@@ -699,7 +756,7 @@ def spans(
 	x: Literal["datetime", "hour", "day", "phase_count"] = "hour",
 ) -> list[tuple]:
 	"""Event spans over days 1-2 of the window, sorted for comparison."""
-	with_bouts = replace(context, _loaded={"event_bouts": bouts} if bouts is not None else {})
+	with_bouts = copy.replace(context, _loaded={"event_bouts": bouts} if bouts is not None else {})
 
 	return prepare.prep_event_spans(with_bouts, (1, 2), "day", x).sort("event", "x0").select("event", "position", "x0", "x1").rows()
 
@@ -736,7 +793,7 @@ def test_a_bout_spans_the_part_of_its_day_it_ran(context):
 		},
 		orient="row",
 	)
-	timed = replace(context, experiment_start=origin)
+	timed = copy.replace(context, experiment_start=origin)
 
 	(injection, social) = spans(timed, bouts, "day")
 
@@ -1015,7 +1072,7 @@ def test_datetime_spans_are_written_like_the_trace_they_mark(context):
 		start=pl.lit(moment), end=pl.lit(moment + dt.timedelta(minutes=10))
 	)
 	loaded = {"ranking": ranking} | ({"event_bouts": bouts} if bouts is not None else {})
-	with_bouts = replace(context, _loaded=loaded)
+	with_bouts = copy.replace(context, _loaded=loaded)
 	mapping = animals_module.resolve_colors(context, "animal_id")
 
 	figure = plot_factory.plot_ranking_line(
@@ -1045,7 +1102,7 @@ def test_timeline_buckets_take_their_dominant_position_until_zoomed_in(context):
 		},
 		schema_overrides={"datetime": pl.Datetime("us", zone)},
 	)
-	context = replace(context, _loaded={"padded_df": main_df})
+	context = copy.replace(context, _loaded={"padded_df": main_df})
 
 	def wall(seconds: float) -> dt.datetime:
 		return dt.datetime(2023, 5, 24, 12) + dt.timedelta(seconds=seconds)
@@ -1080,7 +1137,7 @@ def test_timeline_bars_stop_where_the_visits_do_not_at_bucket_edges(context):
 		},
 		schema_overrides={"datetime": pl.Datetime("us", zone)},
 	)
-	context = replace(context, _loaded={"padded_df": main_df})
+	context = copy.replace(context, _loaded={"padded_df": main_df})
 
 	def wall(seconds: float) -> dt.datetime:
 		return dt.datetime(2023, 5, 24, 12) + dt.timedelta(seconds=seconds)
@@ -1105,7 +1162,7 @@ def test_timeline_extent_keeps_a_leading_undefined_stretch(context):
 		},
 		schema_overrides={"datetime": pl.Datetime("us", zone)},
 	)
-	context = replace(context, _loaded={"padded_df": padded_df})
+	context = copy.replace(context, _loaded={"padded_df": padded_df})
 
 	assert prepare.prep_timeline_extent(context, (1, 1), "day") == (
 		"2023-05-24 12:00:00.000000",
@@ -1128,7 +1185,7 @@ def test_timeline_draws_a_visit_that_began_before_the_window(context):
 		},
 		schema_overrides={"datetime": pl.Datetime("us", zone)},
 	)
-	context = replace(context, _loaded={"padded_df": padded_df})
+	context = copy.replace(context, _loaded={"padded_df": padded_df})
 
 	assert prepare.prep_timeline(context, (2, 2), "day").rows() == [
 		("0035A", "cage_1", dt.datetime(2023, 5, 25, 12), dt.datetime(2023, 5, 25, 12, 2)),
@@ -1150,7 +1207,7 @@ def test_timeline_leaves_an_undefined_gap_empty_between_bars_at_one_position(con
 		},
 		schema_overrides={"datetime": pl.Datetime("us", zone)},
 	)
-	context = replace(context, _loaded={"padded_df": main_df})
+	context = copy.replace(context, _loaded={"padded_df": main_df})
 
 	def wall(seconds: float) -> dt.datetime:
 		return dt.datetime(2023, 5, 24, 12) + dt.timedelta(seconds=seconds)
@@ -1226,7 +1283,7 @@ def test_quality_heatmap_pivots_miss_rate_by_animal_and_antenna(context):
 			"miss_rate": [0.0, 33.3, 16.7, 0.0],
 		}
 	)
-	with_quality = replace(context, _loaded={"recording_quality": quality})
+	with_quality = copy.replace(context, _loaded={"recording_quality": quality})
 
 	matrix, antennas = prepare.prep_quality_heatmap(with_quality, [ANIMALS[0], ANIMALS[1]])
 
@@ -1246,7 +1303,7 @@ def test_heatmap_rows_follow_the_label(context):
 			"miss_rate": [0.0, 9.1, 16.7, 23.1],
 		}
 	)
-	with_quality = replace(context, _loaded={**context._loaded, "recording_quality": quality})
+	with_quality = copy.replace(context, _loaded={**context._loaded, "recording_quality": quality})
 
 	figure = PlotRegistry.build("quality-heatmap", with_quality, label_by="subject_name")
 
@@ -1264,7 +1321,7 @@ def test_a_heatmaps_data_is_one_row_per_cell_under_its_labels(context):
 			"miss_rate": [9.1, 0.0, 0.0, 0.0, 0.0],
 		}
 	)
-	with_quality = replace(context, _loaded={**context._loaded, "recording_quality": quality})
+	with_quality = copy.replace(context, _loaded={**context._loaded, "recording_quality": quality})
 
 	(data,) = PlotRegistry.data("quality-heatmap", with_quality, label_by="subject_name").values()
 
@@ -1320,7 +1377,7 @@ def test_reads_per_antenna_stacks_every_kind_to_100_percent(context):
 			"miss_rate": [20.0, 10.0],
 		}
 	)
-	with_quality = replace(context, _loaded={**context._loaded, "recording_quality": quality})
+	with_quality = copy.replace(context, _loaded={**context._loaded, "recording_quality": quality})
 
 	figure = theme.apply(PlotRegistry.build("quality-antenna", with_quality), "dark")
 
@@ -1343,7 +1400,7 @@ def test_ranking_distribution_is_the_same_for_a_window_in_days_or_phases(context
 			"phase_count": [1, 1, 3, 3, 4, 4],
 		}
 	)
-	context = replace(context, _loaded={"ranking": ranking})
+	context = copy.replace(context, _loaded={"ranking": ranking})
 
 	def fit(days_range, granularity):
 		return prepare.prep_ranking_distribution(context, days_range, granularity)
@@ -1364,7 +1421,7 @@ def test_ranking_over_time_keeps_only_rating_changes_and_each_animals_last(conte
 			"hour": [1, 1, 2, 2, 3, 3, 4, 4],
 		}
 	)
-	context = replace(context, _loaded={"ranking": ranking})
+	context = copy.replace(context, _loaded={"ranking": ranking})
 
 	frame = prepare.prep_ranking_over_time(context, (1, 1), "day")
 
@@ -1395,7 +1452,7 @@ def test_dominance_node_size_is_the_animals_own_ordinal(context):
 	ranking = pl.DataFrame(
 		{"animal_id": ANIMALS[::-1], "ordinal": [10.0, 20.0, 30.0, 40.0], "day": [1] * 4}
 	)
-	context = replace(context, _loaded={"chasings_df": chasings, "ranking": ranking})
+	context = copy.replace(context, _loaded={"chasings_df": chasings, "ranking": ranking})
 
 	nodes, edges = prepare.prep_network_dominance(context, (1, 1), "day", "circular", 0)
 

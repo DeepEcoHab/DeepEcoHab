@@ -4,12 +4,14 @@ import polars as pl
 
 Unit = Literal["seconds", "minutes", "hours", "days"]
 
-_UNITS: dict[Unit, tuple[float, str]] = {
-	"days": (86400.0, "d"),
-	"hours": (3600.0, "h"),
-	"minutes": (60.0, "min"),
-	"seconds": (1.0, "s"),
-}
+_UNITS: frozendict[Unit, tuple[float, str]] = frozendict(
+	{
+		"days": (86400.0, "d"),
+		"hours": (3600.0, "h"),
+		"minutes": (60.0, "min"),
+		"seconds": (1.0, "s"),
+	}
+)
 
 
 def _pick_unit(frame: pl.DataFrame, column: str) -> Unit:

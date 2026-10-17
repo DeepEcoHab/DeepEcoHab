@@ -1,14 +1,13 @@
 """Tests for calculate_pairwise_meetings (co-occurrence time and encounter counts).
 
-A sweep-line over occupancy intervals (the same intervals _get_time_alone reads, via
-_occupancy_intervals) finds spans where >=2 animals share a position - a cage or a
-tunnel, with tunnel directionality collapsed first - decodes the present set, stitches
-temporally-contiguous spans of the same pair into one meeting, drops meetings
-shorter than ``minimum_time`` and sums onto the dense grid. padded_df is read via
-Recording.load_results (monkeypatched); the step is called directly.
+Each animal's back-to-back registrations in a position (a cage or a tunnel, with tunnel
+directionality collapsed first, as _get_time_alone sees them via _occupancy_intervals)
+merge into a stay; two animals' overlapping stays are one meeting, meetings shorter
+than ``minimum_time`` are dropped and the rest summed onto the dense grid. main_df is
+read via Recording.load_results (monkeypatched); the step is called directly.
 
-padded_df rows carry the interval END in ``datetime`` and its length in
-``time_spent``; all events sit in day-1 light_phase.
+The rows carry the interval END in ``datetime`` and its length in ``time_spent``; all
+events sit in day-1 light_phase.
 """
 
 import datetime as dt
@@ -24,11 +23,11 @@ at = strategies.at
 
 
 def padded_pieces(rows, recording) -> pl.LazyFrame:
-	"""Split each ``stay`` row at minute marks with the real padding, as padded_df does.
+	"""Split each ``stay`` row at cell starts with the real padding, as padded_df does.
 
-	Feeds the actual splitter so a multi-minute stay becomes several
-	per-minute pieces (interpolated flags and all), exactly like the production
-	padded_df the pairwise step consumes. This exercises the split -> re-stitch path.
+	Feeds the actual splitter so a stay crossing cells becomes several pieces
+	(interpolated flags and all). The pairwise step reads them as registrations, so
+	this exercises the split -> merge-back path.
 	"""
 	df = pl.DataFrame(
 		{
@@ -41,7 +40,7 @@ def padded_pieces(rows, recording) -> pl.LazyFrame:
 			"time_under": pl.Series([dt.timedelta(0) for _ in rows], dtype=pl.Duration("us")),
 		}
 	)
-	return transforms.split_on_minute_boundaries(df.lazy(), recording)
+	return transforms.split_visits_on_cells(df.lazy(), recording)
 
 
 def run_pairwise(monkeypatch, padded_lf, **kwargs) -> pl.DataFrame:
@@ -182,18 +181,18 @@ def test_contiguous_spans_stitched_into_one_meeting(monkeypatch):
 	assert c["time_together"] == dt.timedelta(seconds=20.0)
 
 
-def test_continuous_costay_split_across_minutes_is_one_encounter(monkeypatch):
+def test_continuous_costay_split_across_cells_is_one_encounter(monkeypatch):
 	"""A single continuous co-stay counts once, even though padding splits it.
 
 	Regression for the elevated pairwise_encounters: A and B sit together in a cage
-	across several wall-clock minute marks. padded_df cuts that stay into per-minute
-	pieces, but reconstructing exact interval bounds lets the sweep re-stitch them
-	into ONE meeting. A boundary-rounding bug fragments the pieces into many spurious
-	encounters instead. The fractional-second offset makes it sensitive to that bug.
+	across two cell starts of the grid. Padding cuts that stay into per-cell pieces,
+	but reconstructing exact interval bounds lets them merge back into ONE meeting. A
+	boundary-rounding bug fragments the pieces into many spurious encounters instead.
+	The fractional-second offset makes it sensitive to that bug.
 	"""
-	# both continuously in cage_1 over [12:00:20.5, 12:03:40.5]: 200 s across 3 marks.
-	start = at(2023, 5, 24, 12, 0, 20, 500_000)
-	end = at(2023, 5, 24, 12, 3, 40, 500_000)
+	# both continuously in cage_1 over [11:58:20.5, 13:01:40.5]: across 12:00 and 13:00.
+	start = at(2023, 5, 24, 11, 58, 20, 500_000)
+	end = at(2023, 5, 24, 13, 1, 40, 500_000)
 	length = (end - start).total_seconds()
 	rows = [
 		{"animal_id": "A", "position": "cage_1", "datetime": end, "time_spent": length},
@@ -238,16 +237,13 @@ def test_encounters_never_exceed_sum_of_visits(monkeypatch):
 	assert c["pairwise_encounters"] == 2  # exactly the two overlapping bouts
 
 
-def test_no_cooccupancy_yields_zero_grid(monkeypatch):
-	"""Animals that never share a cage produce an all-zero grid."""
+def test_no_cooccupancy_yields_no_rows(monkeypatch):
+	"""Only cells a pair met in are stored, so animals that never share a cage store none."""
 	rows = [
 		stay("A", "cage_1", at(2023, 5, 24, 12, 0, 10), 10),
 		stay("B", "cage_2", at(2023, 5, 24, 12, 0, 10), 10),
 	]
-	result = run_pairwise(monkeypatch, strategies.padded_df_frame(rows, RECORDING))
-	assert result.height > 0
-	assert result["time_together"].sum() == dt.timedelta(0)
-	assert result["pairwise_encounters"].sum() == 0
+	assert run_pairwise(monkeypatch, strategies.padded_df_frame(rows, RECORDING)).is_empty()
 
 
 def test_tunnel_cooccupancy_is_a_meeting(monkeypatch):

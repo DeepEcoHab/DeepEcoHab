@@ -13,7 +13,7 @@ import diskcache
 import polars as pl
 import polars.selectors as cs
 from dash import no_update
-from packaging.version import Version
+lazy from packaging.version import Version
 
 from deepecohab import AnalysisParams, Project, Recording, recording_status
 from deepecohab.app.builder import catalog as builder_catalog
@@ -67,7 +67,7 @@ def _manifest(root: Path) -> dict:
 	"""The project's ``project.json``, or an empty dict when it cannot be read."""
 	try:
 		return json.loads((root / Project.MANIFEST).read_text(encoding="utf-8"))
-	except (OSError, ValueError):
+	except OSError, ValueError:
 		return {}
 
 
@@ -183,9 +183,8 @@ def _recording_summary(recording: Recording, steps: int) -> dict:
 		"phases": timeline.phase_range[1] - timeline.phase_range[0] + 1,
 		"n_mice": recording.cohort.n_mice,
 		"traits": [
-			value
+			*dict.fromkeys(getattr(animal, field) for animal in animals)
 			for field in ("mouse_line", "genotype", "sex")
-			for value in dict.fromkeys(getattr(animal, field) for animal in animals)
 		],
 		"events": len(recording.events),
 	}
@@ -204,21 +203,25 @@ def results_stamp(location: str, name: str) -> tuple[tuple[str, int], ...]:
 	return tuple(sorted((path.name, path.stat().st_mtime_ns) for path in results.glob("*.parquet")))
 
 
-@lru_cache(maxsize=8)
+# Two: a context holds whole result tables in memory, which for a long recording runs to
+# gigabytes, and a table read back from disk costs tens of milliseconds.
+@lru_cache(maxsize=2)
 def _plot_context(location: str, name: str, _stamp: tuple[tuple[str, int], ...]) -> PlotContext:
 	return PlotContext.from_recording(load_project(location)[name])
 
 
 #: Driven by the control bar rather than a per-card control: builder option -> rec-controls key.
-GLOBAL_OPTIONS = {
-	"days_range": "window",
-	"granularity": "granularity",
-	"phase_type": "phases",
-	"color_by": "color_by",
-	"label_by": "label_by",
-	"hours_range": "hours",
-	"group_mean": "group_mean",
-}
+GLOBAL_OPTIONS = frozendict(
+	{
+		"days_range": "window",
+		"granularity": "granularity",
+		"phase_type": "phases",
+		"color_by": "color_by",
+		"label_by": "label_by",
+		"hours_range": "hours",
+		"group_mean": "group_mean",
+	}
+)
 
 
 def plot_options(request: dict) -> tuple[PlotContext, dict[str, Any]]:
@@ -630,6 +633,6 @@ def newer_release() -> str | None:
 	try:
 		with urllib.request.urlopen("https://pypi.org/pypi/deepecohab/json", timeout=3) as r:
 			latest = json.load(r)["info"]["version"]
-	except (OSError, ValueError, KeyError):
+	except OSError, ValueError, KeyError:
 		return None
 	return latest if Version(latest) > Version(version("deepecohab")) else None

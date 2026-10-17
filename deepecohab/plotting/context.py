@@ -26,7 +26,7 @@ uniform dark. Those plots offer one kind at a time instead.
 LabelBy = Literal["animal_id", "subject_name"]
 """What an animal is called on an axis, a node or a legend: its tag or its subject name."""
 
-SCOPE_NOUN: Final[dict[str, str]] = {"cages": "cage", "tunnels": "tunnel", "all": "position"}
+SCOPE_NOUN: Final = frozendict({"cages": "cage", "tunnels": "tunnel", "all": "position"})
 """The word a scope goes by in a title or an axis label."""
 
 
@@ -58,12 +58,12 @@ class PlotContext:
 	days_range: tuple[int, int]
 	phase_range: tuple[int, int]
 	tunnels_map: dict[str, str]
-	recording: "Recording | None" = None
+	recording: Recording | None = None
 	experiment_start: dt.datetime | None = None
 	_loaded: dict[str, pl.DataFrame] = field(default_factory=dict, repr=False)
 
 	@classmethod
-	def from_recording(cls, recording: "Recording") -> "PlotContext":
+	def from_recording(cls, recording: Recording) -> PlotContext:
 		"""Build a context reading the results of a recording whose pipeline has run."""
 		timeline = recording.timeline
 		onsets = {

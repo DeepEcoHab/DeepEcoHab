@@ -359,7 +359,8 @@ A chasing event is one animal following another through a tunnel: the winner ent
 from a cage while the loser is still inside, the loser leaves between 0.1 and 1.2 seconds
 (`chasing_time_window`) after the winner entered, and before the winner does. `match_df` holds
 one row per event, dated by the winner's exit. `chasings_df` counts them per hour, with
-`chaser` (the winner) and `chased` (the loser).
+`chaser` (the winner) and `chased` (the loser). It holds only the hours a pair chased in; a
+missing row is zero, and `time_grid` lists every hour, for averaging over them.
 
 `ranking` replays the chasing events in order as matches the chaser won, updating every
 animal's Plackett-Luce rating after each one - the approach multiplayer games use to rank
@@ -386,7 +387,8 @@ switch picks whether the rebuild uses it.
 
 ### Pairwise meetings and in-cohort sociability
 
-`pairwise_meetings` holds, for every pair of animals, position and hour:
+`pairwise_meetings` holds, for every pair of animals, position and hour they met in (a missing
+row is zero, as in `chasings_df`):
 
 - `time_together` - time both spent in the position at once.
 - `pairwise_encounters` - meetings that began in that hour.

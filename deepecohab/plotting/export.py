@@ -9,6 +9,7 @@ from typing import Any, Literal, overload
 
 import plotly.graph_objects as go
 import plotly.io as pio
+lazy import kaleido
 
 PX_PER_MM = 96 / 25.4
 
@@ -65,7 +66,7 @@ _PLOT_WIDTH_FRACTION = 0.72
 _COLORBAR_THICKNESS = 0.8
 """Colour bar thickness, as a multiple of the base font size, floored at 6 px."""
 
-_AXIS_STANDOFF = {"y": 0.4, "x": 0.3}
+_AXIS_STANDOFF = frozendict({"y": 0.4, "x": 0.3})
 """Gap between an axis title and its ticks, as a multiple of the base font size."""
 
 _TICK_SPACING = 3.2
@@ -172,7 +173,7 @@ class _Size:
 	tick: float
 
 	@classmethod
-	def of(cls, width_mm: float, height_mm: float, pt: float) -> "_Size":
+	def of(cls, width_mm: float, height_mm: float, pt: float) -> _Size:
 		base = pt * 96 / 72
 		return cls(
 			round(width_mm * PX_PER_MM), round(height_mm * PX_PER_MM), pt, base, base * _TICK_SCALE
@@ -784,8 +785,6 @@ def ensure_chrome_available() -> bool:
 	kaleido 1.3 needs one; call this at app start so export can be disabled with a
 	clear message instead of every attempt failing deep inside kaleido.
 	"""
-	import kaleido
-
 	try:
 		kaleido.get_chrome_sync()
 		return True
@@ -827,8 +826,6 @@ def export_figure(
 		Warnings from :func:`fit_for_export`, so a caller can surface them alongside
 		the file it wrote.
 	"""
-	import kaleido
-
 	fitted, notes = fit_for_export(figure, width_mm, height_mm, pt, title, show_legend, show_events)
 	scale = dpi / 96 if format == "png" else 1
 	# Rounded boxes and tiles are drawn by the app's script, not by plotly, so kaleido's page
