@@ -17,6 +17,10 @@ import time
 from pathlib import Path
 from typing import TextIO
 
+# Keep each pipe's write end alive until this process exits. On Windows, Popen
+# is not retained by subprocess's active-child list when the caller discards it.
+_helpers: list[subprocess.Popen] = []
+
 
 def can_update() -> bool:
 	"""Whether this app runs from a ``uv tool install``, which ``uv tool upgrade`` updates."""
@@ -57,7 +61,7 @@ def spawn_helper(upgrade_command: list[str], app_command: list[str]) -> subproce
 	The helper learns of the exit from its stdin: the OS closes this end of the pipe when
 	the process goes, whichever way it goes.
 	"""
-	return subprocess.Popen(
+	helper = subprocess.Popen(
 		[
 			getattr(sys, "_base_executable", sys.executable),
 			__file__,
@@ -66,6 +70,8 @@ def spawn_helper(upgrade_command: list[str], app_command: list[str]) -> subproce
 		stdin=subprocess.PIPE,
 		creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
 	)
+	_helpers.append(helper)
+	return helper
 
 
 def restart_in_place(upgrade_command: list[str], app_command: list[str]) -> None:

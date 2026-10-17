@@ -74,7 +74,7 @@ deh.available_attributes(context)
 and tunnel times to seconds and cannot share one colour scale.
 
 **Events.** Plots with a time axis (`recording-timeline`, `cage-preference-evolution`,
-`activity-line`, `chasings-line`, `ranking-line`, `habitat-occupancy`) shade the recording's
+`activity-line`, `animal-speed-daily`, `chasings-line`, `ranking-line`, `habitat-occupancy`) shade the recording's
 [event bouts](./tutorial_antenna.md#metadata), and `recording-pulse` outlines the hours they
 cover.
 
@@ -105,6 +105,8 @@ To list them in code: `deh.PlotRegistry.list_available()`.
 
 | plot | shows | options |
 |---|---|---|
+| `animal-speed` | one box per tunnel, pooling one median crossing speed per animal and day or phase | `days_range`, `granularity`, `phase_type`, `hours_range`, `max_dwell` (positive seconds, default `10`) |
+| `animal-speed-daily` | mean crossing speed with SEM and a side panel, across hours or days/phases; missing bins stay null | `timescale` (`"days"`, `"hours"`), `days_range`, `granularity`, `phase_type`, `hours_range`, `max_dwell`, `color_by`, `label_by`, `group_mean` |
 | `activity-bar` | visits to each position, or time spent there, per animal | `metric` (`"time"`, `"visits"`), `days_range`, `granularity`, `hours_range`, `phase_type`, `agg`, `scope`, `color_by`, `group_mean`, `label_by`, `unit` |
 | `time-alone-bar` | time each animal spent with no other animal present, per position | `days_range`, `granularity`, `hours_range`, `phase_type`, `agg`, `scope`, `color_by`, `group_mean`, `label_by`, `unit` |
 | `cage-preference` | how the cohort's time is distributed across positions | `days_range`, `granularity`, `hours_range`, `phase_type`, `scope`, `unit` |
@@ -113,6 +115,10 @@ To list them in code: `deh.PlotRegistry.list_available()`.
 
 `activity-bar` with `scope="all"` keeps the undefined position, so the time no antenna could
 place stays visible.
+
+The speed plots require explicit per-tunnel distances in `PlotContext.tunnel_lengths_cm`.
+Reading those distances from recording configs is pending the upstream schema; no default
+distance is assumed.
 
 ### Social hierarchy
 

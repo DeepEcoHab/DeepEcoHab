@@ -71,7 +71,13 @@ def project(tmp_path_factory) -> Iterator[deh.Project]:
 @pytest.fixture(scope="session")
 def context(project) -> PlotContext:
 	"""One recording's plotting context, caching the tables it has read."""
-	return PlotContext.from_recording(project.recordings[0])
+	context = PlotContext.from_recording(project.recordings[0])
+	# Config integration is pending the upstream distance schema. These are explicit
+	# test-only distances, not measured lengths of the bundled recordings.
+	context.tunnel_lengths_cm = {
+		name: 25.0 + index * 5 for index, name in enumerate(context.tunnels)
+	}
+	return context
 
 
 def _tables(recording: deh.Recording) -> dict[str, pl.DataFrame]:

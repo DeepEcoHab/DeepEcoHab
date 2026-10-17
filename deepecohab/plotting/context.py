@@ -46,6 +46,9 @@ class PlotContext:
 			:func:`~deepecohab.core.transforms.remove_tunnel_directionality`.
 		recording: the recording whose result parquets the tables are read from. A
 			context built by hand instead hands its tables over in ``_loaded``.
+		tunnel_lengths_cm: crossing distance in centimetres by undirected tunnel name.
+			Speed plots require lengths; missing metadata must not imply a default distance.
+			Config integration is pending the upstream tunnel-distance schema.
 	"""
 
 	animal_ids: list[str]
@@ -57,6 +60,7 @@ class PlotContext:
 	tunnels_map: dict[str, str]
 	recording: "Recording | None" = None
 	_loaded: dict[str, pl.DataFrame] = field(default_factory=dict, repr=False)
+	tunnel_lengths_cm: dict[str, float] = field(default_factory=dict)
 
 	@classmethod
 	def from_recording(cls, recording: "Recording") -> "PlotContext":

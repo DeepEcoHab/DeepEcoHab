@@ -97,8 +97,9 @@ def test_helper_upgrades_once_the_app_exits_then_restarts_it(tmp_path):
 	# exited" would mean the helper did not wait for it.
 	log = tmp_path / "log"
 	app = _IMPORT_UPDATER + (
-		"import json, os, time\n"
+		"import gc, json, os, time\n"
 		"updater.spawn_helper(*json.loads(sys.argv[1]))\n"
+		"gc.collect()\n"
 		"time.sleep(1)\n"
 		"open(sys.argv[2], 'a').write('app exited' + chr(10))\n"
 		"os._exit(0)\n"
