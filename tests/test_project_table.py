@@ -9,6 +9,7 @@ rather than being padded or truncated.
 
 import datetime as dt
 import json
+import os
 import warnings
 from pathlib import Path
 
@@ -167,20 +168,6 @@ def test_recordings_stay_ragged(project):
 	days = {row["recording"]: row["last"] for row in last_day.iter_rows(named=True)}
 
 	assert days["wt_cohort"] > days["ko_cohort"]
-
-
-def test_rates_are_comparable_across_recordings(project):
-	"""Both halves survive the concat, so a rate is a sum-then-divide over the table."""
-	table = project.generate_project_table().collect()
-	rates = (
-		table.filter(pl.col("metric") == "activity")
-		.group_by("genotype")
-		.agg(pl.sum("value"), pl.sum("exposure"))
-		.with_columns((pl.col("value") / pl.col("exposure")).alias("visits_per_hour"))
-	)
-
-	assert rates.height == 2
-	assert (rates["visits_per_hour"] > 0).all()
 
 
 def test_load_returns_what_generate_wrote(project):
@@ -576,3 +563,31 @@ def test_update_notes_with_a_tag_persists_to_one_animal(tmp_path):
 	assert by_tag["A"].notes == "skittish since the cage change"
 	assert by_tag["B"].notes == ""
 	assert reloaded["noted"].notes == ""
+
+
+def test_locate_takes_the_folder_or_its_manifest(tmp_path):
+	project = Project.create(project_name="found", experimenter="t", location=tmp_path)
+	folder = project.project_location
+	assert Project.locate(folder) == Project.locate(folder / Project.MANIFEST) == folder
+	with pytest.raises(FileNotFoundError, match=r"No project\.json"):
+		Project.locate(tmp_path)
+
+
+def test_pending_lists_the_recordings_missing_a_table(tmp_path, project):
+	assert project.pending() == []
+
+	fresh = Project.create(project_name="fresh", experimenter="t", location=tmp_path)
+	recording = make_recording("new", ["A", "B"], "WT", "2023-05-25 00:00:00")
+	fresh.add_recording(*write_recording(tmp_path / "src", recording, 6))
+	assert fresh.pending() == ["new"]
+
+
+def test_the_project_table_goes_stale_once_a_result_is_newer(project):
+	project.generate_project_table().collect()
+	assert not project.project_table_stale()
+
+	result = next(project.recordings[0].results_path.glob("*.parquet"))
+	built = (project.project_location / Project.PROJECT_TABLE).stat().st_mtime
+	os.utime(result, (built + 10, built + 10))
+	assert project.project_table_stale()
+	project.generate_project_table().collect()

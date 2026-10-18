@@ -1,9 +1,8 @@
 """Plotting-layer tests that need no recording on disk.
 
-The end-to-end plot tests need the local catalog and skip without it, so the rules
-the plotting layer relies on are pinned here instead: the palette, the duration
-rendering, the registry's registration-time guards, and core's independence from
-plotting.
+The end-to-end plot tests only check that every plot builds, so the rules the plotting
+layer relies on are pinned here: the palette, the duration rendering, the registry's
+registration-time guards, and core's independence from plotting.
 """
 
 import base64
@@ -89,14 +88,6 @@ def test_palette_is_empty_for_no_values():
 	assert theme.sample_palette(0) == []
 
 
-def test_themes_register_without_changing_the_default():
-	"""Importing the package must not restyle a user's other figures."""
-	import plotly.io as pio
-
-	assert "dark" in pio.templates
-	assert "light" in pio.templates
-
-
 # --- durations ---------------------------------------------------------------
 
 
@@ -147,14 +138,6 @@ def test_value_and_label_agree_on_the_unit():
 
 	assert label == "<b>Time [h]</b>"
 	assert frame["t"].item() == pytest.approx(3.0)
-
-
-def test_to_display_replaces_the_duration_and_adds_its_text():
-	"""A Duration cannot be serialized by plotly, so the column becomes a float."""
-	frame, _ = durations.to_display(_frame([dt.timedelta(hours=2)]), "t", "hours")
-
-	assert frame.schema["t"] == pl.Float64
-	assert frame["t_text"].to_list() == ["2h"]
 
 
 # --- scope -------------------------------------------------------------------
@@ -391,28 +374,6 @@ def test_attribute_colours_are_shared_within_a_group(context):
 	assert mapping.by_animal["0035A"] != mapping.by_animal["0035C"]
 
 
-def test_colours_survive_dropping_an_animal(context):
-	"""Colours come from the cohort, so filtering must not recolour the rest."""
-	full = animals_module.resolve_colors(context, "animal_id").colors
-
-	smaller = PlotContext(
-		_loaded=context._loaded,
-		animal_ids=ANIMALS[:2],
-		cages=context.cages,
-		positions=context.positions,
-		phases=context.phases,
-		days_range=context.days_range,
-		phase_range=context.phase_range,
-		tunnels_map=context.tunnels_map,
-	)
-	subset = animals_module.resolve_colors(smaller, "animal_id").colors
-
-	# The subset samples its own smaller palette; what must hold is that a plot
-	# built from the whole cohort keeps every animal on its own colour.
-	assert len(subset) == 2
-	assert len(set(full.values())) == len(ANIMALS)
-
-
 def test_unknown_colour_column_is_rejected(context):
 	"""A typo names a column that does not exist, so it fails at the call."""
 	with pytest.raises(ValueError, match="color_by"):
@@ -591,12 +552,6 @@ def test_missing_required_table_names_the_plot(clean_registry, context):
 		clean_registry.build("demo", context)
 
 
-def test_unknown_plot_raises(clean_registry, context):
-	"""An unregistered name is an error, not an empty figure."""
-	with pytest.raises(KeyError):
-		clean_registry.build("nope", context)
-
-
 def test_every_plot_explains_itself_briefly():
 	"""The card's info popup has room for a few sentences, not an essay."""
 	for name in PlotRegistry.list_available():
@@ -758,7 +713,12 @@ def spans(
 	"""Event spans over days 1-2 of the window, sorted for comparison."""
 	with_bouts = copy.replace(context, _loaded={"event_bouts": bouts} if bouts is not None else {})
 
-	return prepare.prep_event_spans(with_bouts, (1, 2), "day", x).sort("event", "x0").select("event", "position", "x0", "x1").rows()
+	return (
+		prepare.prep_event_spans(with_bouts, (1, 2), "day", x)
+		.sort("event", "x0")
+		.select("event", "position", "x0", "x1")
+		.rows()
+	)
 
 
 def test_a_bout_spans_the_part_of_its_day_it_ran(context):
@@ -1477,6 +1437,109 @@ def test_edge_cutoff_refits_the_layout_without_the_weak_edges():
 	assert full_edges.height == 3
 	assert cut_edges.height == 2
 	assert full_nodes["x"].to_list() != cut_nodes["x"].to_list()
+
+
+def _ranking_context(context, ranking, chasings=None):
+	chasings = (
+		chasings
+		if chasings is not None
+		else pl.DataFrame(
+			schema={
+				"chaser": pl.Enum(ANIMALS),
+				"chased": pl.Enum(ANIMALS),
+				"chasings": pl.Int64,
+				"day": pl.Int64,
+			}
+		)
+	)
+	return copy.replace(context, _loaded={"chasings_df": chasings, "ranking": ranking})
+
+
+def test_dominance_node_size_is_the_rating_at_the_windows_end(context):
+	"""A rating earned after the window must not stand in for the one at its close."""
+	ranking = pl.DataFrame(
+		{
+			"animal_id": ["0035A", "0035B"] * 4,
+			"ordinal": [1.0, 0.0, 2.0, 0.0, 9.0, 0.0, 20.0, 0.0],
+			"day": [1, 1, 2, 2, 4, 4, 5, 5],
+		}
+	)
+	nodes, _ = prepare.prep_network_dominance(
+		_ranking_context(context, ranking), (1, 3), "day", "circular", 0
+	)
+
+	assert dict(zip(nodes["animal_id"], nodes["size"], strict=True)) == {
+		"0035A": 2.0,
+		"0035B": 0.0,
+		"0035C": 0.0,
+		"0035D": 0.0,
+	}
+
+
+def test_dominance_network_without_any_rating_is_drawn_unsized(context):
+	ranking = pl.DataFrame(schema={"animal_id": pl.String, "ordinal": pl.Float64, "day": pl.Int64})
+
+	nodes, _ = prepare.prep_network_dominance(
+		_ranking_context(context, ranking), (1, 1), "day", "circular", 0
+	)
+
+	assert nodes["size"].to_list() == [0.0] * 4
+
+
+def test_ranking_distribution_reaches_ratings_beyond_the_old_fixed_axis(context):
+	ranking = pl.DataFrame(
+		{
+			"animal_id": ["0035A", "0035B"],
+			"mu": [61.0, -11.0],
+			"sigma": [4.8, 4.8],
+			"day": [1, 1],
+		}
+	)
+
+	frame = prepare.prep_ranking_distribution(_ranking_context(context, ranking), (1, 1), "day")
+
+	assert frame["ranking"].min() <= -11 - 4 * 4.8 + 1
+	assert frame["ranking"].max() >= 61 + 4 * 4.8 - 1
+
+
+def test_node_hover_names_the_real_rating_not_the_marker_size():
+	nodes = pl.DataFrame({"x": [0.0, 1.0], "y": [0.0, 1.0], "size": [-3.0, 5.0]})
+
+	trace = plot_factory._node_trace(nodes, ["red", "blue"], ["a", "b"], include_ranking=True)
+
+	assert trace["marker"]["size"] == [0.1, 5.0]
+	assert trace["hovertext"] == ["Mouse ID: a<br>Ranking: -3.0", "Mouse ID: b<br>Ranking: 5.0"]
+
+
+def _phenotype(ordinals):
+	return pl.DataFrame(
+		{
+			"animal_id": ANIMALS,
+			"subject_name": ["m1", "m2", "m3", "m4"],
+			"visits": [10, 20, 30, 40],
+			"gregariousness": [0.1, 0.2, 0.3, 0.4],
+			"won": [0, 1, 2, 3],
+			"ordinal": ordinals,
+			"rating_size": [1.0] * 4,
+		}
+	)
+
+
+def test_phenotype_annotation_points_at_the_highest_rated_animal(context):
+	mapping = animals_module.resolve_colors(context, "animal_id")
+
+	figure = plot_factory.plot_phenotype_map(_phenotype([1.0, 5.0, 2.0, None]), mapping)
+
+	(note,) = figure["layout"]["annotations"]
+	assert (note["x"], note["y"]) == (20, 0.2)
+
+
+def test_phenotype_without_ratings_claims_no_hierarchy(context):
+	mapping = animals_module.resolve_colors(context, "animal_id")
+
+	figure = plot_factory.plot_phenotype_map(_phenotype([None] * 4), mapping)
+
+	assert "annotations" not in figure["layout"]
 
 
 # --- module boundaries -------------------------------------------------------

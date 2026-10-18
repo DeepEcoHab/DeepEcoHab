@@ -9,7 +9,8 @@ from flask import Blueprint, abort, request, send_file
 
 from deepecohab.app import services
 from deepecohab.app.builder import catalog as builder_catalog, figure as builder_figure
-from deepecohab.core.data_model import DataFrameRegistry, Project, Recording, recording_status
+from deepecohab.core.data_model import Project, Recording
+from deepecohab.core.transforms import csv_ready
 from deepecohab.plotting import PlotRegistry
 from deepecohab.plotting.export import export_figure, styled
 
@@ -53,14 +54,9 @@ def _recording(pid: str, name: str) -> Recording:
 		abort(404, "Unknown recording.")
 
 
-def _computed_tables(recording: Recording) -> list[str]:
-	done = recording_status(recording.root)
-	return [name for name in DataFrameRegistry.list_available() if done.get(name)]
-
-
 @bp.route("/download/project/<pid>/table")
 def project_table(pid: str):
-	"""The project table, parquet or ``?format=csv`` (converted with :func:`services.csv_ready`)."""
+	"""The project table, parquet or ``?format=csv`` (converted with :func:`csv_ready`)."""
 	project = _project(pid)
 	path = project.project_location / Project.PROJECT_TABLE
 	if not path.is_file():
@@ -69,7 +65,7 @@ def project_table(pid: str):
 		return send_file(
 			path, as_attachment=True, download_name=f"{project.project_name}__project_table.parquet"
 		)
-	text = services.csv_ready(pl.read_parquet(path)).write_csv()
+	text = csv_ready(pl.read_parquet(path)).write_csv()
 	return send_file(
 		io.BytesIO(text.encode("utf-8")),
 		as_attachment=True,
@@ -89,10 +85,9 @@ def project_archive(pid: str):
 	with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
 		for recording in project.recordings:
 			for path in recording.root.rglob("*"):
-				relative = path.relative_to(recording.root)
-				if path.is_dir() or (not include_raw and relative.parts[0] == "raw"):
+				if path.is_dir() or (not include_raw and path.is_relative_to(recording.raw_path)):
 					continue
-				zf.write(path, str(Path(recording.name) / relative))
+				zf.write(path, str(Path(recording.name) / path.relative_to(recording.root)))
 
 	buffer.seek(0)
 	suffix = "_with_raw" if include_raw else ""
@@ -112,10 +107,10 @@ def recording_tables(pid: str, recording_name: str):
 	buffer = tempfile.SpooledTemporaryFile(max_size=_SPOOL)  # noqa: SIM115 - closed by send_file
 
 	with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-		for name in _computed_tables(recording):
+		for name in recording.computed_tables():
 			path = recording.results_path / f"{name}.parquet"
 			if as_csv:
-				zf.writestr(f"{name}.csv", services.csv_ready(pl.read_parquet(path)).write_csv())
+				zf.writestr(f"{name}.csv", csv_ready(pl.read_parquet(path)).write_csv())
 			else:
 				zf.write(path, f"{name}.parquet")
 
@@ -133,7 +128,7 @@ def recording_tables(pid: str, recording_name: str):
 def recording_table(pid: str, recording_name: str, name: str):
 	"""One computed analysis table, unconverted."""
 	recording = _recording(pid, recording_name)
-	if name not in _computed_tables(recording):
+	if name not in recording.computed_tables():
 		abort(404, "That table has not been computed for this recording.")
 	path = recording.results_path / f"{name}.parquet"
 	return send_file(path, as_attachment=True, download_name=f"{recording.name}__{name}.parquet")
@@ -144,7 +139,7 @@ def recording_config(pid: str, recording_name: str):
 	"""This recording's config.json, as written by :meth:`Project.update_notes` et al."""
 	recording = _recording(pid, recording_name)
 	return send_file(
-		recording.root / "config.json",
+		recording.config_path,
 		as_attachment=True,
 		download_name=f"{recording.name}__config.json",
 	)
@@ -154,7 +149,7 @@ def recording_config(pid: str, recording_name: str):
 def recording_raw(pid: str, recording_name: str):
 	"""This recording's raw antenna registrations."""
 	recording = _recording(pid, recording_name)
-	path = recording.root / "raw" / "data.parquet"
+	path = recording.data_path
 	if not path.is_file():
 		abort(404, "Raw data not found.")
 	return send_file(path, as_attachment=True, download_name=f"{recording.name}__raw.parquet")
@@ -204,13 +199,16 @@ def export_plot():
 	try:
 		figure = json.loads(request.form["figure"])
 		form = json.loads(request.form["params"])
-	except KeyError, ValueError:
+		size = float(form["width_mm"]), float(form["height_mm"]), float(form["pt"])
+	except KeyError, ValueError, TypeError:
 		abort(400, "Malformed export request.")
 
 	fig = styled(figure, form.get("style", ""))
 
 	filename = _safe_filename(form.get("filename") or "plot")
 	fmt = form.get("format", "svg")
+	if fmt not in ("svg", "pdf", "png"):
+		abort(400, f"Unsupported export format: {fmt!r}.")
 
 	# Read the rendered image into memory before the temp dir cleans up, rather than
 	# handing send_file a path inside it: on Windows the cleanup races the response
@@ -220,9 +218,7 @@ def export_plot():
 		export_figure(
 			fig,
 			image_path,
-			float(form["width_mm"]),
-			float(form["height_mm"]),
-			float(form["pt"]),
+			*size,
 			fmt,
 			int(form.get("dpi", 300)),
 			form.get("title") or "" if form.get("title_on") else "",
@@ -244,7 +240,7 @@ def export_plot():
 		for name, frame in tables.items():
 			zf.writestr(
 				f"{filename}_{name}.csv" if len(tables) > 1 else f"{filename}.csv",
-				services.csv_ready(frame).write_csv(),
+				csv_ready(frame).write_csv(),
 			)
 	buffer.seek(0)
 	return send_file(

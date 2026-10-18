@@ -1,4 +1,5 @@
 import copy
+import logging
 import math
 import re
 import textwrap
@@ -783,8 +784,17 @@ def ensure_chrome_available() -> bool:
 	"""Whether kaleido has a Chrome binary to render through, checked once per process.
 
 	kaleido 1.3 needs one; call this at app start so export can be disabled with a
-	clear message instead of every attempt failing deep inside kaleido.
+	clear message instead of every attempt failing deep inside kaleido. One that is
+	installed, or downloaded earlier, is used as it is; otherwise this downloads one.
 	"""
+	from choreographer.browsers.chromium import Chromium
+
+	if Chromium.find_browser(skip_local=False):
+		return True
+	# Printed as well as logged: a launch from a terminal logs to a file, and this takes a while.
+	message = "Chrome for plot export not found; downloading it now (one-time, about 150 MB)."
+	print(message, flush=True)
+	logging.getLogger(__name__).warning(message)
 	try:
 		kaleido.get_chrome_sync()
 		return True

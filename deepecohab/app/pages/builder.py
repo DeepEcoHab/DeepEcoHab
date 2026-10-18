@@ -678,7 +678,7 @@ def _preset_preview(entry: dict, project) -> list:
 	]
 	preset = presets_mod.BY_ID.get(entry["id"])
 	if preset is not None and preset.needs_event:
-		counts = services.event_recording_counts(project)
+		counts = project.event_counts()
 		choices = project.event_names()
 		actions[:0] = [
 			html.Span("Event", className="deh-sub"),
@@ -1373,7 +1373,9 @@ def _reduce(
 				)
 				if saved is None:
 					raise PreventUpdate
-				entry = {"id": saved["id"], "name": saved["name"], "state": saved["state"]}
+				# Defaults under it, so a preset saved before a state key existed still loads.
+				state = {**figure.new_state(), **saved["state"]}
+				entry = {"id": saved["id"], "name": saved["name"], "state": state}
 			return entry["state"], entry
 
 		case {"type": "filter-mode", "field": name, "mode": mode}:

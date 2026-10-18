@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import logging
 import math
 from itertools import pairwise
 from urllib.parse import parse_qs, quote, urlencode
@@ -23,15 +24,23 @@ from dash import (
 from dash.exceptions import PreventUpdate
 
 from deepecohab.app import components, services
+from deepecohab.app.builder.figure import placeholder
 from deepecohab.app.components import icon, notify
 from deepecohab.core import topology
 from deepecohab.core.data_model import (
 	LEAD_WARNING_THRESHOLD,
+	Boundary,
 	DataFrameRegistry,
 	Recording,
 	Timeline,
 )
-from deepecohab.plotting import PlotContext, PlotRegistry, available_attributes, theme as plot_theme
+from deepecohab.plotting import (
+	PlotContext,
+	PlotRegistry,
+	available_attributes,
+	summaries,
+	theme as plot_theme,
+)
 from deepecohab.plotting.animals import resolve_colors
 from deepecohab.plotting.plot_catalog import PHASES
 from deepecohab.plotting.plot_factory import FACETS_PER_LINE
@@ -173,20 +182,6 @@ layout = html.Div(
 		),
 		html.Div(id="rec-body"),
 		dmc.Modal(
-			id="fullscreen-modal",
-			title="",
-			fullScreen=True,
-			classNames=components.DIALOG_CLASSES,
-			children=html.Div(
-				dcc.Graph(
-					id="fullscreen-plot",
-					figure=components.EMPTY_FIGURE,
-					config={"displayModeBar": False},
-				),
-				id="fullscreen-frame",
-			),
-		),
-		dmc.Modal(
 			id="notes-modal",
 			title="Notes",
 			size=520,
@@ -255,10 +250,11 @@ def _needs(*tables: str, hint: str | None = None) -> html.Div:
 	)
 
 
-def _quality_badge(miss: float) -> html.Span:
-	if miss < 1:
+def _quality_badge(unknown: float) -> html.Span:
+	"""Banded on the cohort's mean share of time in an unknown position, in %."""
+	if unknown < 1:
 		kind, glyph, label = "good", "circle-check", "Good"
-	elif miss < 2.5:
+	elif unknown < 2.5:
 		kind, glyph, label = "warn", "alert-triangle", "Check"
 	else:
 		kind, glyph, label = "bad", "circle-x", "Poor"
@@ -268,7 +264,7 @@ def _quality_badge(miss: float) -> html.Span:
 def _meta_strip(summary: dict) -> list:
 	start = dt.datetime.fromisoformat(summary["start"])
 	end = dt.datetime.fromisoformat(summary["end"])
-	quality = summary["quality"]
+	unknown = summary["unknown"]
 	# Grouped by what they answer (when / where and who / what to follow up), so a narrow
 	# header wraps between groups rather than through one.
 	groups = [
@@ -334,12 +330,13 @@ def _meta_strip(summary: dict) -> list:
 			*(
 				[
 					html.Button(
-						[f"{quality['miss']:.2f}% missed ", _quality_badge(quality["miss"])],
+						[f"{unknown:.2f}% unknown ", _quality_badge(unknown)],
 						id="rec-quality-jump",
 						className="deh-btn deh-btn-ghost sm",
+						title="Mean share of time an animal's position is unknown",
 					)
 				]
-				if quality is not None
+				if unknown is not None
 				else []
 			),
 			html.Button(
@@ -510,9 +507,8 @@ def _plot_card(name: str, context: PlotContext, height: int, tab: str) -> list:
 						title=f"Export {spec.title}",
 					),
 					html.Button(
-						icon("maximize", size=15),
-						id={"type": "card-fullscreen", "plot": name},
-						className="deh-icon-btn sm",
+						[icon("maximize", size=15), icon("x", size=15)],
+						className="deh-icon-btn sm deh-card-max",
 						title=f"Open {spec.title} full screen",
 					),
 				],
@@ -577,9 +573,9 @@ def _quality_summary_children(context: PlotContext) -> list:
 		return [header, _needs("recording_quality")]
 
 	assert context.recording is not None
-	quality = services.quality_summary(context)
+	quality = summaries.quality_summary(context)
 	tiles = [
-		("Missed passes", f"{quality['miss']:.2f}%", _quality_badge(quality["miss"])),
+		("Missed passes", f"{quality['miss']:.2f}%", None),
 		(
 			"Correct reads",
 			f"{quality['correct']:,}",
@@ -590,19 +586,9 @@ def _quality_summary_children(context: PlotContext) -> list:
 		),
 	]
 	if "activity_df" in context and "phase_durations" in context:
-		missing = services.missing_time(context)
-		worst = missing["rows"][0]
-		tiles.insert(
-			1,
-			(
-				"Position unknown",
-				f"{missing['mean_share']:.2f}%",
-				html.Span(
-					f"Worst: {worst['animal_id']} {worst['share']:.2f}%", className="deh-sub"
-				),
-			),
-		)
-	gaps = _gaps(context.recording)
+		share = services.missing_time(context)["mean_share"]
+		tiles.insert(0, ("Position unknown", f"{share:.2f}%", _quality_badge(share)))
+	gaps = context.recording.analysed_gaps()
 	tiles += [*_window_tiles(context.recording.timeline), _gap_tile(gaps)]
 	strip = _gap_strip(context.recording.timeline, gaps) if gaps else None
 	return [header, _tiles(tiles), strip]
@@ -697,25 +683,15 @@ _GAP_KINDS = frozendict(
 )
 
 
-def _gaps(recording: Recording) -> list[tuple[dt.datetime, dt.datetime, str]]:
-	"""The recording's gaps as (start, end, kind), clipped to the analysed window."""
-	begin, stop = recording.timeline.local_span
-	return [
-		(max(gap.start, begin), min(gap.end, stop), gap.kind)
-		for gap in recording.boundaries
-		if gap.end > begin and gap.start < stop
-	]
-
-
-def _gap_tile(gaps: list[tuple[dt.datetime, dt.datetime, str]]) -> tuple:
+def _gap_tile(gaps: list[Boundary]) -> tuple:
 	"""How often acquisition stopped and for how long.
 
 	Poor past 12 h lost, otherwise warned of unless every stop was clean.
 	"""
 	if not gaps:
 		return ("Recording gaps", "0", html.Span("recorded without a break", className="deh-sub"))
-	lost = sum((end - start for start, end, _ in gaps), dt.timedelta())
-	failed = sum(kind != "confirmed_DAQ_inactive" for *_, kind in gaps)
+	lost = sum((gap.end - gap.start for gap in gaps), dt.timedelta())
+	failed = sum(gap.kind != "confirmed_DAQ_inactive" for gap in gaps)
 	text = f"{_span(lost)} lost"
 	note = html.Span(text, className="deh-sub")
 	if lost > dt.timedelta(hours=12) or failed:
@@ -730,14 +706,14 @@ def _gap_tile(gaps: list[tuple[dt.datetime, dt.datetime, str]]) -> tuple:
 	return ("Recording gaps", str(len(gaps)), note)
 
 
-def _gap_strip(line: Timeline, gaps: list[tuple[dt.datetime, dt.datetime, str]]) -> html.Div:
+def _gap_strip(line: Timeline, gaps: list[Boundary]) -> html.Div:
 	"""Each gap as a bar on the phase-tinted strip the events card draws, coloured by kind."""
 	zone = line.recording_timezone
 	place, day_phase, band, axis = _strip_scale(line)
 	bars = []
-	for start, end, kind in gaps:
-		meaning = _GAP_KINDS[kind]
-		onset, offset = start.astimezone(zone), end.astimezone(zone)
+	for gap in gaps:
+		meaning = _GAP_KINDS[gap.kind]
+		onset, offset = gap.start.astimezone(zone), gap.end.astimezone(zone)
 		bars.append(
 			html.Span(
 				className="deh-ev-bar",
@@ -747,7 +723,7 @@ def _gap_strip(line: Timeline, gaps: list[tuple[dt.datetime, dt.datetime, str]])
 				},
 				title=(
 					f"{day_phase(onset)}\n{onset.day} {onset:%b %H:%M} → "
-					f"{offset.day} {offset:%b %H:%M} ({_span(end - start)})\n{meaning}"
+					f"{offset.day} {offset:%b %H:%M} ({_span(gap.end - gap.start)})\n{meaning}"
 				),
 			)
 		)
@@ -958,7 +934,7 @@ def _quality_missing_children(context: PlotContext, color_by: str) -> list:
 		return [header, _needs(*missing), html.Footer(_reads(needed), className="deh-card-foot")]
 
 	result = services.missing_time(context)
-	reads = services.reads_by_animal(context)
+	reads = summaries.reads_by_animal(context)
 	subjects = (
 		{row["animal_id"]: row["subject_name"] for row in context.animals.iter_rows(named=True)}
 		if "animals" in context
@@ -1042,7 +1018,7 @@ def _habitat_card_children(context: PlotContext, height: int) -> list:
 	antenna_stats = None
 	reads = ("layout",)
 	if "recording_quality" in context:
-		antenna_stats = services.quality_summary(context)["antenna_stats"]
+		antenna_stats = summaries.quality_summary(context)["antenna_stats"]
 		reads = ("layout", "recording_quality")
 
 	return [
@@ -1688,6 +1664,18 @@ def _zoom_timeline(x_range, request, events_on, theme):
 
 
 def _build_plot(name: str, request: dict, events_on: bool, theme: str | None, **extra) -> Figure:
+	try:
+		return _draw_plot(name, request, events_on, theme, **extra)
+	except PreventUpdate:
+		raise
+	except Exception:
+		# One failing plot must not leave its card blank and silent; the log keeps the cause.
+		logging.getLogger(__name__).exception("plot %r failed to build", name)
+		failed = placeholder("Plot creation failed").update_layout(template=theme or "light")
+		return Figure(failed.to_plotly_json())
+
+
+def _draw_plot(name: str, request: dict, events_on: bool, theme: str | None, **extra) -> Figure:
 	context, values = services.plot_options(request)
 	if any(table not in context for table in PlotRegistry.spec(name).requires):
 		raise PreventUpdate
@@ -1723,26 +1711,9 @@ def _build_plot(name: str, request: dict, events_on: bool, theme: str | None, **
 	return figure
 
 
-# Clientside: every figure on the tab is already in the browser, so picking one is not
-# worth uploading them all to the server and sending one back.
-clientside_callback(
-	ClientsideFunction("deh", "fullscreen"),
-	Output("fullscreen-modal", "opened"),
-	Output("fullscreen-modal", "title"),
-	Output("fullscreen-plot", "figure"),
-	Output("fullscreen-plot", "style"),
-	Output("fullscreen-frame", "style"),
-	Input({"type": "card-fullscreen", "plot": ALL}, "n_clicks"),
-	State({"type": "plot", "plot": ALL}, "figure"),
-	State({"type": "plot", "plot": ALL}, "id"),
-	State({"type": "card-title", "plot": ALL}, "children"),
-	State({"type": "card-title", "plot": ALL}, "id"),
-	prevent_initial_call=True,
-)
-
-
-# Clientside for the same reason as the fullscreen callback above. The export-source store
-# still feeds the server preview, so one figure goes up - not all of them.
+# Clientside: every figure on the tab is already in the browser, so picking one is not worth
+# uploading them all to the server. The export-source store still feeds the server preview,
+# so one figure goes up - not all of them.
 clientside_callback(
 	ClientsideFunction("deh", "openExport"),
 	Output("export-dialog", "opened", allow_duplicate=True),

@@ -377,9 +377,9 @@ to settle before reading anything the analysis says.
   when the recording started and ended, and how often and for how long it stopped in
   between. Each stop is drawn in red on a strip across the recording's days and phases;
   hovering one says whether it was a clean stop, an abrupt end or a silence of unknown
-  cause. The bands are provisional, to be
-  confirmed on more recordings: under 1% missed is good, 1-2.5% needs checking, and 2.5%
-  or more is poor.
+  cause. The quality badge, here and in the header, bands the mean share of time an
+  animal's position is unknown. The bands are provisional, to be confirmed on more
+  recordings: under 1% is good, 1-2.5% needs checking, and 2.5% or more is poor.
 
   The analysis counts whole phases from the onset of the phase day 1 starts with, so
   **Recording start** and **Recording end** show the clock time and how far each lies

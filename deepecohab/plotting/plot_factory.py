@@ -224,7 +224,11 @@ def _event_runs(spans: pl.DataFrame) -> pl.DataFrame:
 		.agg(
 			pl.col("x0").min(),
 			pl.col("x1").max(),
-			*[getattr(pl.col(c), f)() for c, f in (("start", "min"), ("end", "max")) if c in spans.columns],
+			*[
+				getattr(pl.col(c), f)()
+				for c, f in (("start", "min"), ("end", "max"))
+				if c in spans.columns
+			],
 			pl.col("position").drop_nulls().unique().sort().str.join(", "),
 		)
 		.drop("run")
@@ -283,13 +287,22 @@ def _event_lanes(figure: Figure, runs: pl.DataFrame, xrefs: list[str], offset: f
 		]
 
 		name = str(rows["event"][0])
-		# One tip per bar, in the order of the bars above; the position list is left out for the whole habitat.
+		# One tip per bar, in the order of the bars above
+		# the position list is left out for the whole habitat.
 		tips += [
 			"\n".join(
 				[
 					name,
-					*([f"{row['start']:%Y-%m-%d %H:%M} - {row['end']:%Y-%m-%d %H:%M}"] if "start" in row else []),
-					*([", ".join(_tick_labels(row["position"].split(", ")))] if row["position"] else []),
+					*(
+						[f"{row['start']:%Y-%m-%d %H:%M} - {row['end']:%Y-%m-%d %H:%M}"]
+						if "start" in row
+						else []
+					),
+					*(
+						[", ".join(_tick_labels(row["position"].split(", ")))]
+						if row["position"]
+						else []
+					),
 				]
 			)
 			for row in rows.iter_rows(named=True)
@@ -995,7 +1008,7 @@ def _matrix(
 			"coloraxis": {
 				"colorscale": LAGOON,
 				"cmin": 0,
-				"cmax": matrix.max().item(),
+				"cmax": np.nanmax(matrix).item(),
 				"autocolorscale": False,
 			},
 		},
@@ -1149,6 +1162,7 @@ def _node_trace(
 		labels: what each node is called, aligned with ``nodes``.
 		include_ranking: whether the hover text names the ranking as well as the animal.
 	"""
+	# A marker needs a positive size; the hover keeps the animal's real value.
 	sizes = [size if size > 0 else 0.1 for size in nodes["size"]]
 
 	return {
@@ -1158,7 +1172,7 @@ def _node_trace(
 		"text": [f"<b>{label}</b>" for label in labels],
 		"hovertext": [
 			f"Mouse ID: {label}<br>Ranking: {size}" if include_ranking else f"Mouse ID: {label}"
-			for label, size in zip(labels, sizes, strict=True)
+			for label, size in zip(labels, nodes["size"], strict=True)
 		],
 		"hoverinfo": "text",
 		"mode": "markers+text",
@@ -1573,8 +1587,10 @@ def plot_phenotype_map(
 		},
 	)
 
-	top = frame.sort("ordinal", nulls_last=True).row(-1, named=True)
-	if top["gregariousness"] is not None:
+	# Only a rated animal can top a hierarchy: with no chases there is none to point at.
+	rated = frame.drop_nulls("ordinal")
+	top = rated.sort("ordinal").row(-1, named=True) if rated.height else None
+	if top is not None and top["gregariousness"] is not None:
 		active_str = "more" if top["visits"] >= frame["visits"].median() else "less"
 		social_str = "more" if top["gregariousness"] >= frame["gregariousness"].median() else "less"
 

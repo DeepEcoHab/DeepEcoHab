@@ -2,9 +2,22 @@ import datetime as dt
 from collections.abc import Sequence
 
 import polars as pl
+import polars.selectors as cs
 
 from deepecohab.core import grids
 from deepecohab.core.data_model import Boundary, Layout, Recording
+
+
+def csv_ready(frame: pl.DataFrame) -> pl.DataFrame:
+	"""``frame`` with every Duration column in seconds and every Enum/Categorical as a string.
+
+	CSV has neither type, so a plain ``write_csv`` would otherwise dump raw microsecond
+	integers for a duration and silently drop a category's declared order.
+	"""
+	return frame.with_columns(
+		cs.duration().dt.total_microseconds() / 1_000_000,
+		(cs.enum() | cs.categorical()).cast(pl.String),
+	)
 
 
 def calculate_time_spent(frame: pl.LazyFrame) -> pl.LazyFrame:
@@ -226,6 +239,16 @@ def occupancy_spans(intervals: pl.LazyFrame) -> pl.LazyFrame:
 	)
 
 
+def contiguous_run_id(start: str, end: str, *partition: str) -> pl.Expr:
+	"""Expression numbering runs of back-to-back intervals within each partition.
+
+	A row starting after the previous row's end opens a new run; one starting at or
+	before it continues the run, so an overlap counts as back-to-back. Rows must be
+	sorted by ``start`` within each partition.
+	"""
+	return (pl.col(start) > pl.col(end).shift(1)).fill_null(True).cum_sum().over(partition)
+
+
 def merge_contiguous_stays(intervals: pl.LazyFrame) -> pl.LazyFrame:
 	"""Frame of each animal's back-to-back intervals in one position merged into one stay.
 
@@ -242,15 +265,12 @@ def merge_contiguous_stays(intervals: pl.LazyFrame) -> pl.LazyFrame:
 	# Overlapping counts as back-to-back: registrations never overlap, but intervals
 	# rounded to the microsecond can, and two stays of one animal would meet each other's
 	# partners twice over the overlap.
-	new_stay = (pl.col("position") != pl.col("position").shift(1)) | (
-		pl.col("start") > pl.col("end").shift(1)
-	)
 	return (
 		intervals.filter(pl.col("end") > pl.col("start"))
-		.sort("animal_id", "start")
-		.with_columns(new_stay.fill_null(True).cum_sum().over("animal_id").alias("__stay"))
-		.group_by("animal_id", "__stay")
-		.agg(pl.col("position").first(), pl.col("start").min(), pl.col("end").max())
+		.sort("animal_id", "position", "start")
+		.with_columns(contiguous_run_id("start", "end", "animal_id", "position").alias("__stay"))
+		.group_by("animal_id", "position", "__stay")
+		.agg(pl.col("start").min(), pl.col("end").max())
 		.drop("__stay")
 	)
 
@@ -262,10 +282,10 @@ def overlapping_stays(stays: pl.LazyFrame) -> pl.LazyFrame:
 	stretch of co-presence however many other animals come and go during it, and the
 	result holds one row per meeting rather than one per pair and moment.
 
-	Each position's overlap join is collected before the result is filtered: handed a
-	third predicate such as ``animal_id < animal_id_2``, polars may drive the IEJoin
-	with it instead of the overlap, which yields nearly every pair of stays in the
-	position and can exhaust memory.
+	A sweep rather than an overlap join: with the stays sorted by position and start,
+	every stay that starts before another ends, and after it starts, overlaps it, so one
+	``search_sorted`` over a composite ``(position, time)`` key bounds each stay's
+	partners and no pair that fails to overlap is ever formed. Row order is unspecified.
 
 	Args:
 		stays: :func:`merge_contiguous_stays` output.
@@ -275,26 +295,59 @@ def overlapping_stays(stays: pl.LazyFrame) -> pl.LazyFrame:
 		``start`` and ``end``.
 	"""
 	collected = stays.collect()
-	meetings = []
-	# An empty table still runs once, so the result keeps its schema.
-	for part in collected.partition_by("position") or [collected]:
-		other = part.drop("position").rename(
-			{"animal_id": "animal_id_2", "start": "start_2", "end": "end_2"}
+	if collected.is_empty():
+		return collected.lazy().select(
+			"position",
+			"animal_id",
+			pl.col("animal_id").alias("animal_id_2"),
+			"start",
+			"end",
 		)
-		meetings.append(
-			part.join_where(
-				other, pl.col("start") < pl.col("end_2"), pl.col("start_2") < pl.col("end")
-			)
-			.filter(pl.col("animal_id") < pl.col("animal_id_2"))
-			.select(
-				"position",
-				"animal_id",
-				"animal_id_2",
-				pl.max_horizontal("start", "start_2").alias("start"),
-				pl.min_horizontal("end", "end_2").alias("end"),
-			)
+
+	origin = collected["start"].min()
+	# One position per block of the key, wide enough that no time spills into the next.
+	block = collected.select(
+		(pl.col("end").max() - pl.col("start").min()).dt.total_microseconds() + 1
+	).item()
+
+	def key(column: str) -> pl.Expr:
+		return pl.col("position").to_physical().cast(pl.Int64) * block + (
+			(pl.col(column) - origin).dt.total_microseconds()
 		)
-	return pl.concat(meetings).lazy()
+
+	ordered = collected.sort(pl.col("position").to_physical(), "start").with_row_index("index")
+	ordered = ordered.with_columns(key("start").alias("__start_key"), key("end").alias("__end_key"))
+	# Stays at or after this one in start order that begin before it ends.
+	stop = ordered["__start_key"].search_sorted(ordered["__end_key"], side="left")
+	partners = ordered.select(
+		pl.col("index").alias("partner"),
+		pl.col("animal_id").alias("animal_id_2"),
+		pl.col("start").alias("partner_start"),
+		pl.col("end").alias("partner_end"),
+	)
+
+	return (
+		ordered.lazy()
+		.with_columns(pl.int_ranges(pl.col("index") + 1, stop).alias("partner"))
+		.explode("partner")
+		.drop_nulls("partner")
+		.join(partners.lazy(), on="partner")
+		.filter(pl.col("animal_id") != pl.col("animal_id_2"))
+		.select(
+			"position",
+			pl.when(pl.col("animal_id") < pl.col("animal_id_2"))
+			.then("animal_id")
+			.otherwise("animal_id_2")
+			.alias("animal_id"),
+			pl.when(pl.col("animal_id") < pl.col("animal_id_2"))
+			.then("animal_id_2")
+			.otherwise("animal_id")
+			.alias("animal_id_2"),
+			# The partner starts no earlier, so it is the later arrival.
+			pl.col("partner_start").alias("start"),
+			pl.min_horizontal("end", "partner_end").alias("end"),
+		)
+	)
 
 
 def cooccupancy_spans(intervals: pl.LazyFrame) -> pl.LazyFrame:
@@ -311,8 +364,7 @@ def cooccupancy_spans(intervals: pl.LazyFrame) -> pl.LazyFrame:
 
 	Returns:
 		One row per span and pair, with ``position``, ``time``, ``end``, ``animal_id``,
-		``animal_id_2``, ``is_new`` marking the span that opens a meeting, and
-		``meeting_id`` numbering meetings within the pair and position.
+		``animal_id_2`` and ``meeting_id`` numbering meetings within the pair and position.
 	"""
 	present = occupancy_spans(intervals).filter(pl.col("animals_present") >= 2)
 
@@ -320,15 +372,11 @@ def cooccupancy_spans(intervals: pl.LazyFrame) -> pl.LazyFrame:
 		pl.col("animal_id") < pl.col("animal_id_2")
 	)
 
-	# A new meeting starts wherever a span's start != the previous span's end for that pair.
 	group = ["animal_id", "animal_id_2", "position"]
 	return (
 		pairs.select("position", "time", "end", "animal_id", "animal_id_2")
 		.sort(*group, "time")
-		.with_columns(
-			(pl.col("time") != pl.col("end").shift(1).over(group)).fill_null(True).alias("is_new")
-		)
-		.with_columns(pl.col("is_new").cum_sum().over(group).alias("meeting_id"))
+		.with_columns(contiguous_run_id("time", "end", *group).alias("meeting_id"))
 	)
 
 

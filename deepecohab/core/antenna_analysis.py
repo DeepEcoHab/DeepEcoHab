@@ -1,4 +1,6 @@
 import datetime as dt
+from pathlib import Path
+from typing import IO
 
 import polars as pl
 
@@ -57,13 +59,13 @@ def _get_time_alone(
 	single continuous bout: a bout shorter than ``params.minimum_time_alone`` is dropped
 	whole, and a longer one keeps every span. ``undefined`` positions are excluded.
 	"""
-	new_bout = (pl.col("time") != pl.col("end").shift(1)).fill_null(True)
-
 	return (
 		transforms.occupancy_spans(_occupancy_intervals(padded, recording))
 		.filter(pl.col("animals_present") == 1)
 		.sort("animal_id", "position", "time")
-		.with_columns(new_bout.cum_sum().over("animal_id", "position").alias("bout"))
+		.with_columns(
+			transforms.contiguous_run_id("time", "end", "animal_id", "position").alias("bout")
+		)
 		.filter(
 			(pl.col("end") - pl.col("time")).sum().over("animal_id", "position", "bout")
 			> pl.duration(seconds=params.minimum_time_alone)
@@ -336,6 +338,16 @@ def get_prev_ranking(ranking: pl.LazyFrame | pl.DataFrame) -> pl.LazyFrame:
 		ranking = ranking.sort("datetime")
 
 	return ranking.group_by("animal_id", maintain_order=True).agg(pl.last("mu"), pl.last("sigma"))
+
+
+def read_ranking(source: Path | IO[bytes], *, csv: bool) -> pl.DataFrame:
+	"""A ranking saved as parquet, or as CSV with ``csv``, for :meth:`Recording.set_prev_ranking`.
+
+	``animal_id`` is read from CSV as text, so numeric tags keep their leading zeros.
+	"""
+	if csv:
+		return pl.read_csv(source, schema_overrides={"animal_id": pl.String})
+	return pl.read_parquet(source)
 
 
 @DataFrameRegistry.register("pairwise_meetings", requires=["main_df"])

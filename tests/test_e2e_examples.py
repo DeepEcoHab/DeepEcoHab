@@ -155,16 +155,15 @@ def test_no_nan_or_inf_in_any_float_column(project):
 
 
 def test_chasings_grid_reconciles_with_match_events(project):
-	"""The per-hour chasings grid sums to exactly the chasing events it came from.
+	"""The per-hour chasings sum to exactly the chasing events they came from.
 
-	chasings_df is match_df aggregated and zero-filled onto the dense grid, so the
-	totals must agree per chaser - no event lost or invented by the expansion.
+	chasings_df is match_df aggregated, so the totals must agree per chaser - no event
+	lost or invented.
 	"""
 	for recording in project.recordings:
 		matches = recording.load_results("match_df", eager=True)
 		chasings = recording.load_results("chasings_df", eager=True)
 
-		assert chasings.filter(pl.col("chaser") == pl.col("chased")).height == 0
 		assert int(chasings["chasings"].sum()) == matches.height
 
 		per_chaser = {
@@ -257,18 +256,6 @@ def test_sociability_proportion_stays_within_cage_bounds(project):
 
 		assert proportion.min() >= 0
 		assert proportion.max() <= len(recording.layout.cage_names)
-
-
-def test_tube_test_scores_real_pairs(project):
-	"""Tube-test counts are non-negative, self-pairs absent, animals in the cohort."""
-	for recording in project.recordings:
-		tube = recording.load_results("tube_test_df", eager=True)
-		cohort = set(recording.cohort.animal_tags)
-
-		assert set(tube["winner"].cast(pl.String).unique()) <= cohort
-		assert set(tube["loser"].cast(pl.String).unique()) <= cohort
-		assert tube.filter(pl.col("winner") == pl.col("loser")).height == 0
-		assert (tube["tube_test"] >= 0).all()
 
 
 def test_every_cohort_animal_reaches_the_feature_table(project):

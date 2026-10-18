@@ -256,3 +256,58 @@ def test_events_card_places_each_bout_on_the_recording_clock():
 	bar = strip.children[1].children[0]
 	assert bar.style["left"] == f"max(3px, {100 * 37 / 72:.3f}%)"
 	assert bar.style["right"] == f"max(3px, {100 - 100 * 39.5 / 72:.3f}%)"
+
+
+def test_a_plot_that_fails_to_build_shows_a_message_instead_of_a_blank_card(monkeypatch):
+	def boom(*_args, **_kwargs):
+		raise RuntimeError("bad data")
+
+	monkeypatch.setattr(services, "plot_options", boom)
+
+	figure = recording._build_plot("activity-bar", {}, True, "light")
+
+	assert [note["text"] for note in figure["layout"]["annotations"]] == ["Plot creation failed"]
+
+
+def test_a_plot_prevented_from_updating_stays_prevented(monkeypatch):
+	def prevented(*_args, **_kwargs):
+		raise PreventUpdate
+
+	monkeypatch.setattr(services, "plot_options", prevented)
+
+	with pytest.raises(PreventUpdate):
+		recording._build_plot("activity-bar", {}, True, "light")
+
+
+def test_a_cage_no_tunnel_reaches_is_not_a_habitat():
+	cages = [_cage(n) for n in range(1, 4)]
+	chain = [_tunnel(1, "C1", "C2"), _tunnel(2, "C2", "C3")]
+
+	assert _habitat(cages, chain)
+	with pytest.raises(ValueError, match="cage_3"):
+		_habitat(cages, chain[:1])
+	with pytest.raises(ValueError, match="C9"):
+		_habitat(cages, [*chain, _tunnel(9, "C1", "C9")])
+
+
+def _cage(number: int) -> dict:
+	return {
+		"name": f"cage_{number}",
+		"cell_id": f"C{number}",
+		"cage_type": "standard",
+		"antennas": [],
+	}
+
+
+def _tunnel(number: int, start: str, end: str) -> dict:
+	return {
+		"name": f"tunnel_{number}",
+		"tunnel_no": number,
+		"start_cell_id": start,
+		"end_cell_id": end,
+		"antennas": [],
+	}
+
+
+def _habitat(cages: list[dict], tunnels: list[dict]) -> Layout:
+	return Layout(cages=cages, tunnels=tunnels, antenna_combinations={}, tunnels_map={})

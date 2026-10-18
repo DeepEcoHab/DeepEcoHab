@@ -1,9 +1,7 @@
 import hashlib
 import json
-import threading
-import time
 import urllib.request
-from collections.abc import Callable
+import uuid
 from functools import cache, lru_cache
 from importlib.metadata import version
 from pathlib import Path
@@ -11,15 +9,14 @@ from typing import Any
 
 import diskcache
 import polars as pl
-import polars.selectors as cs
 from dash import no_update
 lazy from packaging.version import Version
 
 from deepecohab import AnalysisParams, Project, Recording, recording_status
 from deepecohab.app.builder import catalog as builder_catalog
 from deepecohab.app.components import notify
-from deepecohab.core.data_model import DataFrameRegistry, Layout
-from deepecohab.plotting import PlotContext, durations
+from deepecohab.core.data_model import AnalysisRun, DataFrameRegistry, atomic_write_text
+from deepecohab.plotting import PlotContext, durations, summaries
 
 BUILDER_PRESETS_FILE = "builder_presets.json"
 
@@ -64,9 +61,9 @@ def resolve_project_path(pid: str) -> str | None:
 
 
 def _manifest(root: Path) -> dict:
-	"""The project's ``project.json``, or an empty dict when it cannot be read."""
+	"""The project's manifest, or an empty dict when it cannot be read."""
 	try:
-		return json.loads((root / Project.MANIFEST).read_text(encoding="utf-8"))
+		return Project.read_manifest(root)
 	except OSError, ValueError:
 		return {}
 
@@ -74,18 +71,6 @@ def _manifest(root: Path) -> dict:
 def project_name(location: str) -> str:
 	"""The name in the project's manifest, or its folder name when that cannot be read."""
 	return _manifest(Path(location)).get("project_name", Path(location).name)
-
-
-def csv_ready(frame: pl.DataFrame) -> pl.DataFrame:
-	"""``frame`` with every Duration column in seconds and every Enum/Categorical as a string.
-
-	CSV has neither type, so a plain ``write_csv`` would otherwise dump raw microsecond
-	integers for a duration and silently drop a category's declared order.
-	"""
-	return frame.with_columns(
-		cs.duration().dt.total_microseconds() / 1_000_000,
-		(cs.enum() | cs.categorical()).cast(pl.String),
-	)
 
 
 def load_project(location: str) -> Project:
@@ -152,19 +137,8 @@ def project_summary(location: str) -> dict:
 		"error": None,
 		"recordings": [_recording_summary(recording, steps) for recording in project.recordings],
 		"delisted": list(project.delisted),
-		"table_stale": table.is_file() and _table_stale(project, table),
+		"table_stale": project.project_table_stale(),
 	}
-
-
-def _table_stale(project: Project, table: Path) -> bool:
-	"""Whether the project table misses a listed recording or predates any of its results."""
-	built = table.stat().st_mtime_ns
-	listed = set(pl.scan_parquet(table).select(pl.col("recording").unique()).collect().to_series())
-	return listed != {recording.name for recording in project.recordings} or any(
-		path.stat().st_mtime_ns > built
-		for recording in project.recordings
-		for path in recording.results_path.glob("*.parquet")
-	)
 
 
 def _recording_summary(recording: Recording, steps: int) -> dict:
@@ -265,46 +239,16 @@ def recording_summary(location: str, name: str) -> dict:
 		"tunnels": len(recording.layout.tunnels),
 		"events": [event.name for event in recording.events],
 		"notes": recording.notes,
-		"quality": quality_summary(context) if "recording_quality" in context else None,
+		# Series.mean() is typed as a broad scalar union; "share" is a plain float column.
+		"unknown": float(summaries.unknown_time(context)["share"].mean())  # ty: ignore[invalid-argument-type]
+		if "activity_df" in context and "phase_durations" in context
+		else None,
 	}
 
 
 def update_notes(location: str, name: str, notes: str, tag: str | None = None) -> None:
 	"""Persist new notes for one recording or animal; the next `load_project` picks them up."""
 	load_project(location).update_notes(name, notes, tag)
-
-
-def quality_summary(context: PlotContext) -> dict:
-	"""Pooled detection-quality stats for the header and the quality tab's tiles."""
-	frame = context.table("recording_quality").with_columns(pl.col("animal_id").cast(pl.String))
-	counts = pl.col("correct", "interpolated", "bad").sum()
-	missed = pl.col("interpolated") + pl.col("bad")
-	passes = pl.col("correct") + missed
-	rate = pl.when(passes > 0).then(100 * missed / passes).otherwise(0.0).alias("miss")
-
-	pooled = frame.select(counts).with_columns(rate).row(0, named=True)
-
-	return {
-		**pooled,
-		"antenna_stats": {
-			str(row.pop("antenna")): row
-			for row in frame.group_by("antenna")
-			.agg(counts)
-			.with_columns(rate)
-			.iter_rows(named=True)
-		},
-	}
-
-
-def reads_by_animal(context: PlotContext) -> dict[str, dict[str, int]]:
-	"""Each animal's ``correct``, ``interpolated`` and ``bad`` passes over every antenna."""
-	return {
-		row.pop("animal_id"): row
-		for row in context.table("recording_quality")
-		.group_by(pl.col("animal_id").cast(pl.String))
-		.agg(pl.col("correct", "interpolated", "bad").sum())
-		.iter_rows(named=True)
-	}
 
 
 def overview_tiles(context: PlotContext) -> list[dict]:
@@ -316,127 +260,67 @@ def overview_tiles(context: PlotContext) -> list[dict]:
 	Returns:
 		One ``label`` / ``value`` / ``note`` dict per tile, in reading order.
 	"""
-	assert context.recording is not None
-	days = context.days_range[1] - context.days_range[0] + 1
-	phases = context.phase_range[1] - context.phase_range[0] + 1
+	overview = summaries.recording_overview(context)
 	tiles = [
 		{
 			"label": "Duration",
-			"value": f"{days} d",
-			"note": f"{phases} phases · {len(context.animal_ids)} mice",
+			"value": f"{overview['days']} d",
+			"note": f"{overview['phases']} phases · {overview['mice']} mice",
 		}
 	]
 
-	if "main_df" in context:
-		# Lazily: this card is built for every recording that is opened, and main_df runs
-		# to hundreds of thousands of rows that nothing here reads except to count them.
-		rows = context.recording.load_results("main_df", eager=False).select(pl.len())
-		note = ""
-		if "activity_df" in context:
-			visits = _placed(context).select(pl.sum("visits_to_position")).item()
-			note = f"{visits:,} visits".replace(",", " ")
+	if "registrations" in overview:
+		visits = overview.get("visits")
 		tiles.append(
 			{
 				"label": "Registrations",
-				"value": f"{rows.collect().item():,}".replace(",", " "),
-				"note": note,
+				"value": _spaced(overview["registrations"]),
+				"note": "" if visits is None else f"{_spaced(visits)} visits",
 			}
 		)
 
-	if "chasings_df" in context:
-		frame = context.table("chasings_df")
-		won = frame.group_by("chaser").agg(pl.sum("chasings")).sort("chasings", descending=True)
-		total = int(frame["chasings"].sum())
+	if "chasings" in overview:
+		top = overview["top_chaser"]
 		tiles.append(
 			{
 				"label": "Chasings",
-				"value": f"{total:,}".replace(",", " "),
-				"note": f"top animal won {won['chasings'][0]} - {won['chaser'][0]}"
-				if total
+				"value": _spaced(overview["chasings"]),
+				"note": f"top animal won {top['chasings']} - {top['chaser']}"
+				if top
 				else "none recorded",
 			}
 		)
 
-	if "activity_df" in context and context.cages:
-		share = (
-			_placed(context)
-			.filter(pl.col("position").is_in(context.cages))
-			.group_by("position")
-			.agg(pl.col("time_in_position").sum().dt.total_seconds().alias("seconds"))
-			.with_columns((100 * pl.col("seconds") / pl.col("seconds").sum()).alias("pct"))
-			.sort("pct", descending=True)
-			.row(0, named=True)
-		)
-		kind = next(
-			cage.cage_type
-			for cage in context.recording.layout.cages
-			if cage.name == share["position"]
-		)
+	if cage := overview.get("busiest_cage"):
 		tiles.append(
 			{
 				"label": "Busiest cage",
-				"value": share["position"].capitalize().replace("_", " "),
-				"note": f"{share['pct']:.0f}% of cohort time · {kind}",
+				"value": cage["position"].capitalize().replace("_", " "),
+				"note": f"{cage['pct']:.0f}% of cohort time · {cage['cage_type']}",
 			}
 		)
 
 	return tiles
 
 
-def _placed(context: PlotContext) -> pl.DataFrame:
-	"""``activity_df`` without the undefined sentinel, which is not a place."""
-	return context.table("activity_df").filter(
-		pl.col("position").cast(pl.String) != Layout.UNDEFINED
-	)
+def _spaced(count: int) -> str:
+	return f"{count:,}".replace(",", " ")
 
 
 def missing_time(context: PlotContext) -> dict:
 	"""Time each animal spent at a position antennas could not resolve, and its share.
 
-	Args:
-		context: the plot context holding ``activity_df`` and ``phase_durations``.
-
 	Returns:
 		``rows`` (worst first): ``animal_id``, ``time_in_position_text`` and ``share`` as
 		a percentage of the recording length, plus the cohort ``mean_share``.
 	"""
-	# Series.sum() is typed as a broad scalar union; it is a Duration here, same column.
-	length = context.table("phase_durations")["duration"].sum().total_seconds()  # ty: ignore[unresolved-attribute]
-
-	frame = (
-		context.table("activity_df")
-		.with_columns(pl.col("animal_id").cast(pl.String))
-		.filter(pl.col("position").cast(pl.String) == Layout.UNDEFINED)
-		.group_by("animal_id")
-		.agg(pl.col("time_in_position").sum())
-		.join(pl.DataFrame({"animal_id": context.animal_ids}), on="animal_id", how="right")
-		.with_columns(pl.col("time_in_position").fill_null(pl.duration(microseconds=0)))
-		.with_columns(
-			(100 * pl.col("time_in_position").dt.total_seconds(fractional=True) / length).alias(
-				"share"
-			)
-		)
-		.sort("share", descending=True)
-	)
+	frame = summaries.unknown_time(context)
 	frame, _label = durations.to_display(frame, "time_in_position", "auto", "Time unknown")
-
 	return {
 		"rows": frame.select("animal_id", "time_in_position_text", "share").to_dicts(),
 		# Series.mean() is typed as a broad scalar union; "share" is a plain float column.
 		"mean_share": float(frame["share"].mean()),  # ty: ignore[invalid-argument-type]
 	}
-
-
-def event_recording_counts(project: Project) -> dict[str, int]:
-	"""How many recordings declare each event, "Any event" counting recordings with any."""
-	counts = dict.fromkeys(project.event_names(), 0)
-	for recording in project.recordings:
-		declared = {event.name for event in recording.events}
-		for name in declared:
-			counts[name] += 1
-		if declared:
-			counts["Any event"] += 1
-	return counts
 
 
 def builder_frame(location: str) -> tuple[pl.LazyFrame, list[builder_catalog.Field]]:
@@ -459,8 +343,7 @@ def load_saved_presets(location: str) -> list[dict]:
 
 def _write_presets(location: str, presets: list[dict]) -> None:
 	"""Overwrite ``<project>/builder_presets.json``."""
-	path = Path(location) / BUILDER_PRESETS_FILE
-	path.write_text(json.dumps(presets, indent=2), encoding="utf-8")
+	atomic_write_text(Path(location) / BUILDER_PRESETS_FILE, json.dumps(presets, indent=2))
 
 
 def save_preset(location: str, preset: dict) -> None:
@@ -474,68 +357,79 @@ def delete_saved_preset(location: str, preset_id: str) -> None:
 	_write_presets(location, [p for p in load_saved_presets(location) if p["id"] != preset_id])
 
 
-def request_cancel(location: str) -> None:
-	"""Ask a running analysis of ``location`` to stop once its steps in flight land."""
-	with diskcache.Cache(CACHE_DIR) as flags:
-		flags.set(f"cancel:{location}", True, expire=3600)
+# ponytail: runs live in this process's memory, so the app must be served by one process;
+# a multi-worker deploy needs them in shared storage, or behind the API's own run table.
+_runs: dict[str, tuple[str, AnalysisRun]] = {}
 
 
-def run_analysis(
-	set_progress: Callable[[dict], None],
-	_clicks: int,
-	selection: list[list[str]],
-	params: dict | None,
-	overwrite: bool,
-	use_prev_ranking: bool,
-	failed: dict[str, dict[str, str]],
-) -> tuple:
-	"""The Run analysis background callback: the selected recordings, project by project.
+def start_run(
+	selection: list[list[str]], params: dict | None, overwrite: bool, use_prev_ranking: bool
+) -> str | None:
+	"""Start analysing the selected recordings that need it; the run's id, None if none do.
 
-	Progress goes out as ``{location: {recording: [steps done, steps, step building]}}``.
-	A watcher thread turns :func:`request_cancel` into the pipeline's cancel event, so the
-	steps in flight still land. Recordings left incomplete by a project that raised are
-	marked failed.
-
+	The selection is one project's: the Projects page cannot select across projects.
 	The stored previous rankings are only optional when overwriting: that switch is hidden
 	otherwise, so a ranking built for the first time always starts from them.
-
-	Returns:
-		The failed-recordings store and the selection, cleared after a clean run. The outcome
-		goes out as a notification.
 	"""
-	params = {**(params or {}), "use_prev_ranking": use_prev_ranking or not overwrite}
-
-	order = DataFrameRegistry.step_order()
-	progress = pending_progress(selection, overwrite)
-	todo = {location: list(recordings) for location, recordings in progress.items()}
-
-	if not todo:
-		message = (
-			f"Nothing to build: the selected recordings already have all {len(order)} tables. "
-			"Turn on Overwrite to rebuild them."
+	location = selection[0][0]
+	names = [name for _, name in selection]
+	if not overwrite:
+		names = load_project(location).pending(names)
+	if not names:
+		steps = len(DataFrameRegistry.step_order())
+		notify(
+			"warn",
+			f"Nothing to build: the selected recordings already have all {steps} tables. "
+			"Turn on Overwrite to rebuild them.",
 		)
-		notify("warn", message)
-		return no_update, no_update
+		return None
 
-	started = time.perf_counter()
-	cancel = threading.Event()
-	errors = _analyse_projects(
-		progress, AnalysisParams(**params), overwrite, order, set_progress, cancel
-	)
+	params = {**(params or {}), "use_prev_ranking": use_prev_ranking or not overwrite}
+	run = AnalysisRun(Path(location), names, AnalysisParams(**params), overwrite=overwrite)
+	run_id = uuid.uuid4().hex
+	_runs[run_id] = location, run
+	return run_id
 
+
+def run_progress(run_id: str) -> dict:
+	"""``{location: {recording: [steps done, steps]}}`` of a run."""
+	location, run = _runs[run_id]
+	return {location: run.progress()}
+
+
+def cancel_run(run_id: str) -> None:
+	"""Ask a run to stop once its steps in flight land."""
+	if run_id in _runs:
+		_runs[run_id][1].cancel()
+
+
+def analysis_running() -> bool:
+	"""Whether any run in this process is still building."""
+	return any(not run.done for _, run in _runs.values())
+
+
+def finish_run(run_id: str, failed: dict[str, dict[str, str]] | None) -> tuple | None:
+	"""None while the run goes on; then the failed-recordings store and the selection.
+
+	Recordings a failed run left incomplete are marked failed, and the selection is cleared
+	after a clean run. The outcome goes out as a notification.
+	"""
+	location, run = _runs[run_id]
+	if not run.done:
+		return None
+	del _runs[run_id]
+
+	names = list(run.progress())
 	failed = dict(failed or {})
-	for location, names in todo.items():
-		kept = {
-			name: reason for name, reason in failed.get(location, {}).items() if name not in names
-		}
-		if location in errors:
-			kept |= {name: str(errors[location]) for name in names if not _analysed(location, name)}
-		failed[location] = kept
+	kept = {name: reason for name, reason in failed.get(location, {}).items() if name not in names}
+	if run.error is not None:
+		kept |= {name: str(run.error) for name in load_project(location).pending(names)}
+	failed[location] = kept
 
-	if errors:
-		notify("bad", f"Analysis failed: {next(iter(errors.values()))}")
+	if run.error is not None:
+		notify("bad", f"Analysis failed: {run.error}")
 		return failed, no_update
-	if cancel.is_set():
+	if run.cancelled:
 		notify(
 			"warn",
 			"Cancelled. Recordings in flight finished their current step first, and their "
@@ -543,96 +437,30 @@ def run_analysis(
 		)
 		return failed, no_update
 
-	count = sum(map(len, todo.values()))
-	noun = "recording" if count == 1 else "recordings"
-	notify("good", f"Analysed {count} {noun} in {time.perf_counter() - started:.1f} s")
+	noun = "recording" if len(names) == 1 else "recordings"
+	notify("good", f"Analysed {len(names)} {noun} in {run.elapsed:.1f} s")
 	return failed, []
-
-
-def pending_progress(selection: list[list[str]], overwrite: bool) -> dict:
-	"""The progress a run starts from: each selected recording it will build, at step 0.
-
-	The click paints it straight away; the background run only reports once its worker is up.
-	"""
-	order = DataFrameRegistry.step_order()
-	progress: dict[str, dict[str, list]] = {}
-	for location, name in selection:
-		if overwrite or not _analysed(location, name):
-			progress.setdefault(location, {})[name] = [0, len(order), order[0]]
-	return progress
-
-
-def _analyse_projects(
-	progress: dict,
-	params: AnalysisParams,
-	overwrite: bool,
-	order: list[str],
-	set_progress: Callable[[dict], None],
-	cancel: threading.Event,
-) -> dict[str, Exception]:
-	"""Analyse each project in turn, reporting progress and collecting the ones that raised.
-
-	``progress`` is :func:`pending_progress`, updated in place as steps land. A watcher
-	thread turns :func:`request_cancel` into ``cancel``, so the steps in flight still land.
-	``cancel`` is the caller's, so it can tell a cancelled run from a clean one.
-	"""
-	todo = {location: list(recordings) for location, recordings in progress.items()}
-	errors: dict[str, Exception] = {}
-	finished = threading.Event()
-
-	with diskcache.Cache(CACHE_DIR) as flags:
-		keys = [f"cancel:{location}" for location in todo]
-		for key in keys:
-			flags.delete(key)
-		# Cancel shows once progress does, so a click can no longer land before this reset.
-		set_progress(progress)
-
-		def watch() -> None:
-			while not finished.wait(0.5):
-				if any(flags.get(key) for key in keys):
-					cancel.set()
-
-		def analyse(location: str, names: list[str]) -> None:
-			with Project.load(Path(location)) as project:
-				for event in project.iter_analysis(
-					params, names, overwrite=overwrite, cancel=cancel
-				):
-					building = order[event.step_index] if event.step_index < len(order) else ""
-					progress[location][event.recording] = [event.step_index, len(order), building]
-					set_progress(progress)
-
-		threading.Thread(target=watch, daemon=True).start()
-		try:
-			for location, names in todo.items():
-				if cancel.is_set():
-					break
-				try:
-					analyse(location, names)
-				except Exception as exc:  # shown to the user; the other projects still run
-					errors[location] = exc
-		finally:
-			finished.set()
-
-	return errors
-
-
-def _analysed(location: str, name: str) -> bool:
-	return all(recording_status(Path(location) / name).values())
 
 
 # ponytail: local installs only - delete with its _check_update and _update callbacks,
 # updater.py and the toast's listener in clientside.js once the app is deployed and users
 # no longer update it.
-@cache
 def newer_release() -> str | None:
 	"""The latest stable PyPI release if it is newer than the installed one, else None.
 
 	PyPI's ``info.version`` skips pre-releases, so an installed rc above the last stable
 	release compares as newer and nothing is offered. None too when PyPI is unreachable.
 	"""
+	latest = _latest_release()
+	return latest if latest and Version(latest) > Version(version("deepecohab")) else None
+
+
+@cache
+def _latest_release() -> str | None:
 	try:
 		with urllib.request.urlopen("https://pypi.org/pypi/deepecohab/json", timeout=3) as r:
-			latest = json.load(r)["info"]["version"]
+			return json.load(r)["info"]["version"]
 	except OSError, ValueError, KeyError:
+		# Not cached: a lookup that failed at startup is tried again on the next page load.
+		_latest_release.cache_clear()
 		return None
-	return latest if Version(latest) > Version(version("deepecohab")) else None

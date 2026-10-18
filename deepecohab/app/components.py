@@ -562,7 +562,7 @@ def _habitat_mouth(x: float, y: float, dx: float, dy: float) -> tuple[float, flo
 
 
 def _habitat_band(miss: float | None) -> str:
-	"""The quality class for one antenna, on the bands the header badge already uses."""
+	"""The quality class for one antenna by its miss rate: under 1% clean, 2.5% and over bad."""
 	if miss is None or miss < 1:
 		return ""
 	return "warn" if miss < 2.5 else "bad"
@@ -698,7 +698,7 @@ def _habitat_svg(layout: Layout, label: str, antenna_stats: dict[str, dict] | No
 #: Legend keys after the cage types, as (extra class, label).
 _HAB_KEYS = (("tunnel", "tunnel"), ("ant", "antenna"))
 
-#: Shown only when there are miss rates to band by; same cuts as the header's quality badge.
+#: Shown only when there are miss rates to band by; same cuts as _habitat_band.
 _HAB_BAND_KEYS = (("ant warn", "1-2.5% missed"), ("ant bad", "2.5% and over"))
 
 

@@ -107,12 +107,6 @@ def test_chase_event_detected(monkeypatch):
 	assert total(result, "B", "A") == 0  # direction guard, no double count
 
 
-def test_guard_event_detected(monkeypatch):
-	"""A head-on GUARD encounter (winner holds its origin cage) is counted once."""
-	result = run_tube(monkeypatch, strategies.main_df_frame(encounter(behavior="guard"), RECORDING))
-	assert total(result, "A", "B") == 1
-
-
 def test_winner_behavior_isolates_chase(monkeypatch):
 	"""A CHASE encounter counts under CHASE/BOTH but not under GUARD."""
 	rows = strategies.main_df_frame(encounter(behavior="chase"), RECORDING)

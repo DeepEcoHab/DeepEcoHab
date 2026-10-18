@@ -29,7 +29,7 @@ def test_newer_release(monkeypatch, installed, on_pypi, offered):
 	body = json.dumps({"info": {"version": on_pypi}}).encode()
 	monkeypatch.setattr(services.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(body))
 	monkeypatch.setattr(services, "version", lambda _: installed)
-	services.newer_release.cache_clear()
+	services._latest_release.cache_clear()
 	assert services.newer_release() == offered
 
 
@@ -38,9 +38,9 @@ def test_newer_release_offline(monkeypatch):
 		raise OSError("no network")
 
 	monkeypatch.setattr(services.urllib.request, "urlopen", unreachable)
-	services.newer_release.cache_clear()
+	services._latest_release.cache_clear()
 	assert services.newer_release() is None
-	services.newer_release.cache_clear()
+	services._latest_release.cache_clear()
 
 
 @pytest.mark.parametrize(

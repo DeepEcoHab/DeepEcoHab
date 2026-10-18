@@ -487,6 +487,10 @@ new MutationObserver(() => {
 	});
 }).observe(document.body, {childList: true, subtree: true});
 
+/* Click events within this many ms of the last one on the same button are one click (clickEvent). */
+const _CLICK_DEBOUNCE_MS = 400;
+const _lastClick = {};
+
 /* The recording controls bar sticks under the header; once its head row has scrolled off
  * the top it tucks away behind the header (see .is-tucked), leaving a strip that hovering
  * pulls back down. No callback behind it: the class follows the scroll alone, and the bar
@@ -616,7 +620,7 @@ document.addEventListener("click", function (event) {
 	const table = th.closest("table"), body = table.tBodies[0];
 	const col = th.cellIndex, dir = th.getAttribute("aria-sort") === "ascending" ? -1 : 1;
 	const rows = [...body.rows], last = rows.at(-1);
-	const pinned = last.querySelector("td[colspan]") ? rows.pop() : null;
+	const pinned = last && last.querySelector("td[colspan]") ? rows.pop() : null;
 	const key = (row) => row.cells[col].textContent.replace(/[,%\s]/g, "");
 	const cmp = (a, b) => {
 		const x = key(a), y = key(b), nx = parseFloat(x), ny = parseFloat(y);
@@ -628,11 +632,15 @@ document.addEventListener("click", function (event) {
 	th.setAttribute("aria-sort", dir > 0 ? "ascending" : "descending");
 });
 
-/* Table, habitat and builder plot cards: the maximize button fills the window with the card itself; the same
+/* Recording and builder cards: the maximize button fills the window with the card itself; the same
  * button, now an X, or Escape puts it back. An open dialog holds focus, so its Escape is its own. */
 document.addEventListener("click", function (event) {
 	const button = event.target.closest(".deh-card-max");
-	if (button) button.closest(".deh-card, .deh-graph-card").classList.toggle("is-max");
+	if (!button) return;
+	const card = button.closest(".deh-card, .deh-graph-card");
+	const plot = card.querySelector(".deh-plot");
+	if (plot && !card.classList.contains("is-max")) card.style.setProperty("--deh-ar", plot.offsetWidth / plot.offsetHeight);
+	card.classList.toggle("is-max");
 });
 document.addEventListener("keydown", function (event) {
 	if (event.key !== "Escape" || event.target.closest(".mantine-Modal-root")) return;
@@ -657,6 +665,44 @@ function _openAntenna(event) {
 	_habPop.style.top = `${at.bottom + 6}px`;
 	_habPop.showPopover();
 }
+/* Window and hours sliders: a click on a handle that does not drag it opens a box to type
+ * its value into; Enter or leaving the box sets it, Escape drops it. Values are kept
+ * within the slider and short of the other handle by the slider's minRange. */
+const _SLIDER_GAP = {"rec-window": 0, "rec-hours": 1};
+let _thumbDown = null;
+document.addEventListener("pointerdown", (event) => (_thumbDown = [event.clientX, event.clientY]), true);
+document.addEventListener("click", function (event) {
+	const thumb = event.target.closest(".mantine-RangeSlider-thumb");
+	const root = thumb && thumb.closest(".mantine-RangeSlider-root");
+	if (!root || !(root.id in _SLIDER_GAP) || !_thumbDown) return;
+	if (Math.hypot(event.clientX - _thumbDown[0], event.clientY - _thumbDown[1]) > 3) return;
+	const thumbs = [...root.querySelectorAll(".mantine-RangeSlider-thumb")];
+	const values = thumbs.map((t) => Number(t.getAttribute("aria-valuenow")));
+	const i = thumbs.indexOf(thumb), gap = _SLIDER_GAP[root.id];
+	const lo = i ? values[0] + gap : Number(thumb.getAttribute("aria-valuemin"));
+	const hi = i ? Number(thumb.getAttribute("aria-valuemax")) : values[1] - gap;
+	const box = document.body.appendChild(document.createElement("input"));
+	Object.assign(box, {type: "number", min: lo, max: hi, step: 1, value: values[i], className: "deh-thumb-edit"});
+	box.setAttribute("aria-label", thumb.getAttribute("aria-label") || "Handle value");
+	const at = thumb.getBoundingClientRect();
+	box.style.left = `${at.left + at.width / 2}px`;
+	box.style.top = `${at.top - 6}px`;
+	let done = false;
+	const close = (commit) => {
+		if (done) return;
+		done = true;
+		const v = Math.round(Number(box.value));
+		box.remove();
+		if (!commit || box.value === "" || !Number.isFinite(v)) return;
+		values[i] = Math.min(hi, Math.max(lo, v));
+		window.dash_clientside.set_props(root.id, {value: values});
+	};
+	box.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === "Escape") && close(e.key === "Enter"));
+	box.addEventListener("blur", () => close(true));
+	box.focus();
+	box.select();
+}, true); // capture: the slider stops the thumb's click from bubbling
+
 document.addEventListener("click", _openAntenna);
 document.addEventListener("keydown", _openAntenna);
 document.addEventListener("scroll", () => _habPop && _habPop.hidePopover(), true);
@@ -912,24 +958,6 @@ window.dash_clientside.deh = {
 		return [1, bound, marks, value, merged];
 	},
 
-	// The card's plot is drawn at its on-page size and scaled up whole, so fonts, legend and
-	// colorbar keep their proportions instead of shrinking relative to a larger canvas.
-	fullscreen: function (_clicks, figures, ids, titles, titleIds) {
-		const picked = _pickPlot(figures, ids);
-		const card = document.getElementById(JSON.stringify({plot: picked.name, type: "plot"}));
-		const width = card.offsetWidth;
-		const height = card.offsetHeight;
-		const scale = Math.min((window.innerWidth - 32) / width, (window.innerHeight - 120) / height);
-		const layout = Object.assign({}, picked.figure.layout, {width: width, height: height, autosize: false});
-		return [
-			true,
-			_plotTitle(picked.name, titles, titleIds),
-			Object.assign({}, picked.figure, {layout: layout}),
-			{width: width + "px", height: height + "px", transform: "scale(" + scale + ")", transformOrigin: "0 0"},
-			{width: width * scale + "px", height: height * scale + "px", margin: "auto", overflow: "hidden"},
-		];
-	},
-
 	// The export route rebuilds the CSV from the card's own plot request. The zoom store
 	// outlives a new request, so it counts only while the timeline still shows that zoom.
 	openExport: function (_clicks, figures, ids, titles, titleIds, context, requests, requestIds, zoom) {
@@ -1012,7 +1040,14 @@ window.dash_clientside.deh = {
 		const dc = window.dash_clientside;
 		const trigger = dc.callback_context.triggered[0];
 		if (!trigger || !trigger.value) return dc.no_update;
-		return {id: dc.callback_context.triggered_id, at: Date.now()};
+		const id = dc.callback_context.triggered_id;
+		const key = JSON.stringify(id);
+		const now = Date.now();
+		// A double click acts once: the second lands before the table or shelf it hit is
+		// rebuilt, on a row that is already gone.
+		if (now - (_lastClick[key] || 0) < _CLICK_DEBOUNCE_MS) return dc.no_update;
+		_lastClick[key] = now;
+		return {id: id, at: now};
 	},
 
 	// The save dialog pictures the builder plot as it stands, Format included, for the preset
@@ -1061,7 +1096,11 @@ window.dash_clientside.deh = {
 				const bar = document.querySelector(".deh-controls");
 				if (!el || !bar) return;
 				const below = parseFloat(getComputedStyle(bar).top) + bar.offsetHeight + 16;
-				window.scrollTo({top: scrollY + el.getBoundingClientRect().top - below, behavior: "smooth"});
+				const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+				window.scrollTo({
+					top: scrollY + el.getBoundingClientRect().top - below,
+					behavior: calm ? "auto" : "smooth",
+				});
 			});
 		}
 	},
@@ -1148,10 +1187,6 @@ window.dash_clientside.deh = {
 			const hidden = (selection || []).filter(([project]) => project === button.id.index).length < 2;
 			button.value === hidden || dc.set_props(button.id, {hidden});
 		});
-	},
-
-	resetProgress: function () {
-		return null;
 	},
 
 	/* Reinstate popover: select-all ticks every delisted name; ticking names repaints select-all. */

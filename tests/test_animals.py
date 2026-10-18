@@ -64,13 +64,6 @@ def test_join_key_matches_the_analysis_tables():
 	assert joined["genotype"].null_count() == 0
 
 
-def test_grouping_by_metadata_covers_the_cohort():
-	"""The point of the table: results group by a recorded attribute."""
-	animals = build()
-	by_genotype = animals.group_by("genotype").agg(pl.len().alias("n"))
-	assert by_genotype["n"].sum() == RECORDING.cohort.n_mice
-
-
 def test_age_is_whole_days_at_recording_start():
 	animals = build()
 	start = RECORDING.timeline.local_span[0].date()

@@ -139,30 +139,6 @@ def test_minimum_time_alone_drops_only_shorter_spans(monkeypatch):
 	assert cell(at_threshold, "B", "cage_2")["time_alone"] == dt.timedelta(0)
 
 
-def test_missing_animal_is_zero_filled(monkeypatch):
-	"""An animal that never appears in padded_df still gets dense zero rows.
-
-	This is the 'animal goes missing / dies mid-experiment' contract: the dead
-	animal is present in every grid cell with zero occupancy/visits/solitary time,
-	never absent.
-	"""
-	rows = [
-		{
-			"animal_id": "A",
-			"position": "cage_1",
-			"datetime": at(2023, 5, 24, 12, 0, 5),
-			"time_spent": 5.0,
-		}
-	]
-	result = run_activity(monkeypatch, strategies.padded_df_frame(rows, RECORDING))
-
-	c_rows = result.filter(pl.col("animal_id") == "C")
-	assert c_rows.height > 0
-	assert c_rows["time_in_position"].sum() == dt.timedelta(0)
-	assert c_rows["visits_to_position"].sum() == 0
-	assert c_rows["time_alone"].sum() == dt.timedelta(0)
-
-
 def test_directional_tunnel_ends_collapse_into_one_position(monkeypatch):
 	"""The two ends of a tunnel are one place, so their dwell time is one cell.
 

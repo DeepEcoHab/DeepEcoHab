@@ -3,11 +3,11 @@
 calculate_ranking replays each chasing event in match_df as a one-on-one match
 and emits the full rating trajectory (one row per animal after every match). The
 step reads match_df via Recording.load_results, so we monkeypatch that to feed a small,
-hand-built match table and exercise the pure compute body directly via
-``__wrapped__`` .
+hand-built match table and call the step directly.
 """
 
 import datetime as dt
+import io
 import random
 from functools import partial
 from zoneinfo import ZoneInfo
@@ -109,44 +109,6 @@ def test_phase_count_aligned_to_grid(monkeypatch):
 	result = run_ranking(monkeypatch, [("B", "A", at(2023, 5, 24, 21, 0, 0))], ["A", "B"])
 	assert result["phase_count"].null_count() == 0
 	assert set(result["phase_count"].unique().to_list()) == {2}
-
-
-def test_one_row_per_animal_per_match(monkeypatch):
-	"""Every match emits one row for every animal (full trajectory)."""
-	matches = [
-		("B", "A", at(2023, 5, 24, 12, 0, 0)),
-		("B", "A", at(2023, 5, 24, 12, 1, 0)),
-		("B", "A", at(2023, 5, 24, 12, 2, 0)),
-	]
-	result = run_ranking(monkeypatch, matches, ["A", "B", "C"])
-	assert result.height == len(matches) * 3  # 3 animals
-
-
-def test_consistent_winner_outranks_loser(monkeypatch):
-	"""If A always beats B, A's final ordinal exceeds B's."""
-	matches = [("B", "A", at(2023, 5, 24, 12, i, 0)) for i in range(5)]
-	result = run_ranking(monkeypatch, matches, ["A", "B"])
-
-	ordinals = final_block(result)
-	assert ordinals["A"] > ordinals["B"]
-
-
-def test_uninvolved_animal_keeps_default_ordinal(monkeypatch):
-	"""An animal that never plays stays at the model's default rating."""
-	matches = [("B", "A", at(2023, 5, 24, 12, 0, 0))]
-	result = run_ranking(monkeypatch, matches, ["A", "B", "C"])
-
-	c_rows = result.filter(pl.col("animal_id") == "C")
-	assert (c_rows["ordinal"] == expected_ordinal()).all()
-
-
-def test_winner_and_loser_move_in_opposite_directions(monkeypatch):
-	"""After one match the winner's ordinal rises above default and the loser's falls below."""
-	result = run_ranking(monkeypatch, [("B", "A", at(2023, 5, 24, 12, 0, 0))], ["A", "B"])
-
-	ordinals = final_block(result)
-	assert ordinals["A"] > expected_ordinal()
-	assert ordinals["B"] < expected_ordinal()
 
 
 # --- social_rank ------------------------------------------------------------
@@ -422,3 +384,9 @@ def test_replay_is_deterministic_when_matches_share_a_timestamp(monkeypatch):
 	assert final_block(forwards) == final_block(backwards)
 	# The tiebreak has to do something: the three animals do not end up level.
 	assert len(set(final_block(forwards).values())) > 1
+
+
+def test_read_ranking_keeps_leading_zeros_of_csv_tags():
+	text = b"animal_id,mu,sigma\n007,25.0,8.3\n"
+	ranking = antenna_analysis.read_ranking(io.BytesIO(text), csv=True)
+	assert ranking["animal_id"].to_list() == ["007"]

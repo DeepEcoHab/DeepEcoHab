@@ -9,7 +9,11 @@ description = "EcoHab with some machine learning"
 readme = "README.md"
 requires-python = ">=3.15"
 license = "MIT"
-license-files = [ "LICENSE" ]
+license-files = [
+    "LICENSE",
+    "deepecohab/app/assets/fonts/OFL.txt",
+    "deepecohab/app/assets/icons/LICENSE.txt",
+]
 authors = [
     { name = "Konrad Danielewski", email = "k.danielewski@nencki.edu.pl" },
     { name = "Ula Włodkowska", email = "u.wlodkowska@nencki.edu.pl" },
@@ -44,7 +48,8 @@ dependencies = [
 
     [project.optional-dependencies]
     app = [
-        "dash[diskcache]>=4",
+        "dash>=4",
+        "diskcache",
         "dash-mantine-components>=2.8.0",
         "orjson",
         "packaging",

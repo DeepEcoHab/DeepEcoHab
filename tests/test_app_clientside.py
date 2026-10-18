@@ -55,34 +55,12 @@ const fire = (triggered_id, value) => {
 _HARNESS = (
 	_PRELUDE
 	+ """
-// --- fullscreen / openExport: the right figure and title, out of several ---------------
+// --- openExport: the right figure and title, out of several ---------------
 const ids = [{plot: "activity-bar"}, {plot: "ranking-line"}, {plot: "chasings-heatmap"}];
 const figures = ids.map((id, i) => ({data: [{y: [i]}], layout: {}}));
 // deliberately a different order, as Dash gives no ordering guarantee between two ALL states
 const titleIds = [{plot: "chasings-heatmap"}, {plot: "activity-bar"}, {plot: "ranking-line"}];
 const titles = ["Chasings heatmap", "Activity per position", "Social dominance ranking"];
-
-// only the clicked plot's card is measured; any other lookup finds nothing and throws
-const card = {offsetWidth: 400, offsetHeight: 300};
-document.getElementById = (id) =>
-	id === JSON.stringify({plot: "ranking-line", type: "plot"}) ? card : null;
-Object.assign(window, {innerWidth: 1032, innerHeight: 720});
-
-fire({type: "card-fullscreen", plot: "ranking-line"}, 1);
-eq(
-	deh.fullscreen(null, figures, ids, titles, titleIds),
-	[
-		true,
-		"Social dominance ranking",
-		{data: [{y: [1]}], layout: {width: 400, height: 300, autosize: false}},
-		{width: "400px", height: "300px", transform: "scale(2)", transformOrigin: "0 0"},
-		{width: "800px", height: "600px", margin: "auto", overflow: "hidden"},
-	],
-	"fullscreen picks the clicked plot and scales its card to fit the window"
-);
-
-fire({type: "card-fullscreen", plot: "ranking-line"}, null);
-prevents(() => deh.fullscreen(null, figures, ids, titles, titleIds), "a rebuild is not a click");
 
 // in yet another order: a request that has not been filled in yet is only {tab}
 const requestIds = [{plot: "ranking-line"}, {plot: "activity-bar"}, {plot: "chasings-heatmap"}];
@@ -464,6 +442,9 @@ fire(chip, null);
 eq(deh.clickEvent() === NO, true, "a re-render passes nothing on");
 fire(chip, 1);
 eq(deh.clickEvent().id, chip, "a click passes its id on");
+eq(deh.clickEvent() === NO, true, "the same click again at once is a double click");
+fire({...chip, field: "hour"}, 1);
+eq(deh.clickEvent().id.field, "hour", "a different button still passes");
 
 // --- builderKind: the palette redraws for a new plot type only ------------------------
 eq(deh.builderKind({kind: "box"}, "line"), "box", "builderKind passes a new type on");

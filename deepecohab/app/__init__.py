@@ -1,14 +1,9 @@
 import logging
-import marshal
 import threading
 from importlib.metadata import version
-from types import CodeType
 
 import dash
 import dash_mantine_components as dmc
-import dill
-import diskcache
-import multiprocess
 from dash import ALL, ClientsideFunction, Dash, Input, Output, State, dcc, html
 from dash.exceptions import PreventUpdate
 
@@ -37,29 +32,9 @@ _ACCENT = [
 ]
 
 
-def _patch_dill_code_pickling() -> None:
-	# ponytail: dill 0.4.1 reads code.co_lnotab, removed in Python 3.15, so every background
-	# job failed to pickle and its child died with WinError 6. Marshal is exact here, the job
-	# runs under this same interpreter. Delete once dill supports 3.15.
-	if hasattr(CodeType, "co_lnotab"):
-		return
-
-	@dill.register(CodeType)
-	def _save_code(pickler, obj):
-		pickler.save_reduce(marshal.loads, (marshal.dumps(obj),), obj=obj)
-
-
 def create_app() -> Dash:
 	"""Build the Dash application; call once per process."""
-	_patch_dill_code_pickling()
-	background_callback_manager = dash.DiskcacheManager(diskcache.Cache(services.CACHE_DIR))
-	app = Dash(
-		__name__,
-		use_pages=True,
-		suppress_callback_exceptions=True,
-		background_callback_manager=background_callback_manager,
-		title="DeepEcoHab",
-	)
+	app = Dash(__name__, use_pages=True, suppress_callback_exceptions=True, title="DeepEcoHab")
 	app.layout = _layout()
 	app.server.register_blueprint(downloads.bp)
 	_register_callbacks(app)
@@ -304,9 +279,8 @@ def _register_callbacks(app: Dash) -> None:
 
 	@app.callback(Input("update-request", "data"), prevent_initial_call=True)
 	def _update(_):
-		# Every background callback is a child process of the server; one still running
-		# would be killed mid-write, and on Windows holds files the upgrade must replace.
-		if multiprocess.active_children():  # ty: ignore[unresolved-attribute] - set at runtime
+		# A run's threads live in this server process, which the update restarts mid-write.
+		if services.analysis_running():
 			notify("warn", "An analysis is running. Update once it has finished.")
 			return
 		notify(

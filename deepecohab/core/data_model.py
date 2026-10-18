@@ -5,6 +5,7 @@ import json
 import logging
 import shutil
 import threading
+import time
 import warnings
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -16,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 from pydantic import (
+	AfterValidator,
 	AwareDatetime,
 	BaseModel,
 	ConfigDict,
@@ -23,6 +25,7 @@ from pydantic import (
 	PastDate,
 	PrivateAttr,
 	StringConstraints,
+	TypeAdapter,
 	ValidationInfo,
 	computed_field,
 	field_serializer,
@@ -35,6 +38,28 @@ lazy from deepecohab.core.antenna_analysis import get_prev_ranking
 lazy from deepecohab.core.recording_pipeline import event_status
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+def _not_dots(name: str) -> str:
+	if not name.strip("."):
+		raise ValueError(f"{name!r} is not a usable folder name")
+	return name
+
+
+#: Becomes a folder name, so it must not climb out of its parent or nest.
+FolderName = Annotated[
+	str,
+	StringConstraints(strip_whitespace=True, min_length=1, pattern=r"^[^/\\]+$"),
+	AfterValidator(_not_dots),
+]
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+	"""Write ``text`` to ``path`` so a crash leaves the old file, never a truncated one."""
+	tmp = path.with_name(path.name + ".tmp")
+	tmp.write_text(text, encoding="utf-8")
+	tmp.replace(path)
+
 
 CALENDAR_COLUMNS: Final = ("phase", "day", "phase_count", "hour")
 """The columns placing a row on the recording's calendar; every analysis table is keyed by them."""
@@ -118,6 +143,39 @@ class Layout(BaseModel):
 			)
 		return self
 
+	@model_validator(mode="after")
+	def _check_connected(self) -> Layout:
+		"""Tunnels join cages, and together they make one habitat.
+
+		A tunnel ending in no cage, or a cage no chain of tunnels leads to, is a layout the
+		antennas cannot have been wired to, and the habitat map has nowhere to draw it.
+		"""
+		cells = {cage.cell_id: cage.name for cage in self.cages}
+		ends = {
+			cell for tunnel in self.tunnels for cell in (tunnel.start_cell_id, tunnel.end_cell_id)
+		}
+		if dangling := sorted(ends - set(cells)):
+			raise ValueError(f"tunnels end in {dangling}, which are the cell of no cage.")
+
+		neighbours: dict[str, set[str]] = {cell: set() for cell in cells}
+		for tunnel in self.tunnels:
+			neighbours[tunnel.start_cell_id].add(tunnel.end_cell_id)
+			neighbours[tunnel.end_cell_id].add(tunnel.start_cell_id)
+
+		reached: set[str] = set()
+		pending = list(cells)[:1]
+		while pending:
+			cell = pending.pop()
+			if cell not in reached:
+				reached.add(cell)
+				pending.extend(neighbours[cell] - reached)
+
+		if unreached := sorted(cells[cell] for cell in set(cells) - reached):
+			raise ValueError(
+				f"cages {unreached} are not linked to the rest of the habitat by tunnels."
+			)
+		return self
+
 	@computed_field
 	@property
 	def positions_non_directional(self) -> list[str]:
@@ -169,7 +227,15 @@ class Cohort(BaseModel):
 	assignment and pair enumeration downstream is built from.
 	"""
 
-	animals: list[Animal] = Field(min_length=1)
+	# 63: occupancy and chase winners are tracked as one bit per animal in an Int64 mask.
+	animals: list[Animal] = Field(min_length=1, max_length=63)
+
+	@model_validator(mode="after")
+	def _check_tags(self) -> Cohort:
+		tags = [animal.tag for animal in self.animals]
+		if duplicates := sorted({tag for tag in tags if tags.count(tag) > 1}):
+			raise ValueError(f"animal tags must be unique, got duplicates of {duplicates}")
+		return self
 
 	@computed_field
 	@property
@@ -568,9 +634,12 @@ class DataFrameRegistry:
 		path = recording.results_path / f"{name}.parquet"
 		if overwrite or not path.is_file():
 			path.parent.mkdir(parents=True, exist_ok=True)
+			# Written aside, so a crash never leaves a truncated file that counts as built.
+			tmp = path.with_name(path.name + ".tmp")
 			cls._builders[name](recording, params).sink_parquet(
-				path, compression="lz4", engine="streaming"
+				tmp, compression="lz4", engine="streaming"
 			)
+			tmp.replace(path)
 
 
 def recording_status(root: Path) -> dict[str, bool]:
@@ -605,7 +674,7 @@ class Recording(BaseModel):
 
 	PREV_RANKING: ClassVar[str] = "prev_ranking.parquet"
 
-	name: NonEmptyStr
+	name: FolderName
 	project_name: NonEmptyStr
 	recording_location: NonEmptyStr
 	timeline: Timeline
@@ -667,6 +736,35 @@ class Recording(BaseModel):
 		"""Where this recording's analysis tables are written."""
 		return self.root / "results"
 
+	@property
+	def raw_path(self) -> Path:
+		"""The folder holding the data and the files the recording was added from."""
+		return self.root / "raw"
+
+	@property
+	def data_path(self) -> Path:
+		"""This recording's raw antenna registrations."""
+		return self.raw_path / "data.parquet"
+
+	@property
+	def config_path(self) -> Path:
+		"""This recording's config.json, as :meth:`Project.update_notes` et al. write it."""
+		return self.root / Project.CONFIG
+
+	def analysed_gaps(self) -> list[Boundary]:
+		"""The gaps in recording that fall in the analysed window, clipped to it."""
+		begin, stop = self.timeline.local_span
+		return [
+			copy.replace(gap, start=max(gap.start, begin), end=min(gap.end, stop))
+			for gap in self.boundaries
+			if gap.end > begin and gap.start < stop
+		]
+
+	def computed_tables(self) -> list[str]:
+		"""The registered tables this recording has already computed."""
+		done = recording_status(self.root)
+		return [name for name in DataFrameRegistry.list_available() if done.get(name)]
+
 	@overload
 	def load_results(self, key: str, *, eager: Literal[False] = False) -> pl.LazyFrame: ...
 	@overload
@@ -727,7 +825,9 @@ class Recording(BaseModel):
 				f"{sorted(foreign)} are not in the cohort of {self.name!r}; a previous ranking "
 				"must come from a recording of the same animals."
 			)
-		ratings.write_parquet(path)
+		tmp = path.with_name(path.name + ".tmp")
+		ratings.write_parquet(tmp)
+		tmp.replace(path)
 
 	@classmethod
 	def from_config(cls, config: dict[str, Any], data_path: Path) -> Recording:
@@ -989,7 +1089,12 @@ class Project(BaseModel):
 		location: Path,
 		description: str = "",
 	) -> Project:
-		"""Creates the project in a project_name folder inside location and writes its manifest."""
+		"""Creates the project in a project_name folder inside location and writes its manifest.
+
+		Raises:
+			ValueError: ``project_name`` cannot be a folder name (a path, or only dots).
+		"""
+		project_name = TypeAdapter(FolderName).validate_python(project_name)
 		location = (Path(location).expanduser() / project_name).resolve()
 		location.mkdir(parents=True, exist_ok=True)
 		if (location / cls.MANIFEST).exists():
@@ -1012,7 +1117,7 @@ class Project(BaseModel):
 	def load(cls, location: Path) -> Project:
 		"""Reopen a project written by _save(), following the manifest's pointers."""
 		location = Path(location).expanduser().resolve()
-		raw = json.loads((location / cls.MANIFEST).read_text(encoding="utf-8"))
+		raw = cls.read_manifest(location)
 
 		raw["data_catalog"] = {
 			name: cls._read_config(location / rel)
@@ -1024,6 +1129,33 @@ class Project(BaseModel):
 		# would bracket each one with a line for something the user did not do.
 		project.log.debug("opened project (%d recordings)", len(project.data_catalog))
 		return project
+
+	@classmethod
+	def read_manifest(cls, location: Path) -> dict[str, Any]:
+		"""The project's ``project.json`` as written, without loading a recording.
+
+		Its keys are this model's fields; ``data_catalog`` and ``delisted`` map each
+		recording name to its config.json. It is what a project that fails to load can
+		still be listed from.
+		"""
+		return json.loads((Path(location) / cls.MANIFEST).read_text(encoding="utf-8"))
+
+	@classmethod
+	def locate(cls, path: Path) -> Path:
+		"""The project folder ``path`` names: the folder itself, or its ``project.json``.
+
+		Raises:
+			FileNotFoundError: there is no ``project.json`` there.
+		"""
+		folder = Path(path).expanduser()
+		if folder.name == cls.MANIFEST:
+			folder = folder.parent
+		if not (folder / cls.MANIFEST).is_file():
+			raise FileNotFoundError(
+				f"No {cls.MANIFEST} in {folder}. Pick the folder that holds it; it sits next "
+				"to one folder per recording."
+			)
+		return folder.resolve()
 
 	def close(self) -> None:
 		"""Release the log file handle."""
@@ -1158,9 +1290,7 @@ class Project(BaseModel):
 			recording.notes = notes
 		else:
 			{animal.tag: animal for animal in recording.cohort.animals}[tag].notes = notes
-		(recording.root / self.CONFIG).write_text(
-			recording.model_dump_json(indent=2), encoding="utf-8"
-		)
+		atomic_write_text(recording.root / self.CONFIG, recording.model_dump_json(indent=2))
 		self.log.info("%s: notes updated%s", name, f" for animal {tag}" if tag else "")
 
 	def remove_recording(self, name: str, *, delete_files: bool = False) -> None:
@@ -1173,11 +1303,11 @@ class Project(BaseModel):
 		if name not in self.data_catalog:
 			raise KeyError(f"No recording named {name!r} in project {self.project_name!r}.")
 
-		del self.data_catalog[name]
 		if delete_files:
-			shutil.rmtree(self.project_location / name, ignore_errors=True)
+			shutil.rmtree(self.project_location / name)  # raises, leaving the catalog as it was
 		else:
 			self.delisted[name] = f"{name}/{self.CONFIG}"
+		del self.data_catalog[name]
 
 		self._drop_from_project_table(name)
 		self.log.warning(
@@ -1319,7 +1449,9 @@ class Project(BaseModel):
 			)
 
 		path = self.project_location / self.PROJECT_TABLE
-		pl.concat(frames, how="vertical").sink_parquet(path, compression="lz4", engine="streaming")
+		tmp = path.with_name(path.name + ".tmp")
+		pl.concat(frames, how="vertical").sink_parquet(tmp, compression="lz4", engine="streaming")
+		tmp.replace(path)
 		self.log.info("wrote project table from %d recordings", len(frames))
 		return pl.scan_parquet(path)
 
@@ -1385,9 +1517,7 @@ class Project(BaseModel):
 
 		# Largest first: the biggest recording sets the run's length, so its steps must not
 		# queue behind the small ones for a worker.
-		largest_first = sorted(
-			recordings, key=lambda r: (r.root / "raw" / "data.parquet").stat().st_size, reverse=True
-		)
+		largest_first = sorted(recordings, key=lambda r: r.data_path.stat().st_size, reverse=True)
 		queued = [(recording, step) for recording in largest_first for step in order]
 		done: dict[str, set[str]] = {recording.name: set() for recording in recordings}
 		running: dict[Future, tuple[Recording, str]] = {}
@@ -1429,6 +1559,47 @@ class Project(BaseModel):
 			for error in failures:
 				self.log.error("analysis failed", exc_info=error)
 			raise failures[0]
+
+	def pending(self, names: Iterable[str] | None = None) -> list[str]:
+		"""The recordings that miss at least one table of the pipeline.
+
+		Args:
+			names: look only at these recordings; ``None`` covers the whole project.
+		"""
+		return [
+			recording.name
+			for recording in self._select(names)
+			if not all(recording_status(recording.root).values())
+		]
+
+	def project_table_stale(self) -> bool:
+		"""Whether the project table misses a listed recording or predates any of its results.
+
+		False when the table has not been generated.
+		"""
+		table = self.project_location / self.PROJECT_TABLE
+		if not table.is_file():
+			return False
+		built = table.stat().st_mtime_ns
+		listed = set(
+			pl.scan_parquet(table).select(pl.col("recording").unique()).collect().to_series()
+		)
+		return listed != set(self.data_catalog) or any(
+			path.stat().st_mtime_ns > built
+			for recording in self.recordings
+			for path in recording.results_path.glob("*.parquet")
+		)
+
+	def event_counts(self) -> dict[str, int]:
+		"""How many recordings declare each event, "Any event" counting recordings with any."""
+		counts = dict.fromkeys(self.event_names(), 0)
+		for recording in self.recordings:
+			declared = {event.name for event in recording.events}
+			for name in declared:
+				counts[name] += 1
+			if declared:
+				counts["Any event"] += 1
+		return counts
 
 	def event_names(self, names: Iterable[str] | None = None) -> list[str]:
 		"""Every event name the recordings declare, plus "Any event"; empty when they declare none.
@@ -1477,7 +1648,7 @@ class Project(BaseModel):
 			(root / "results").mkdir(parents=True)
 			recording.data.sink_parquet(target)
 			recording.data = pl.scan_parquet(target)  # our copy, not the caller's
-			(root / self.CONFIG).write_text(recording.model_dump_json(indent=2), encoding="utf-8")
+			atomic_write_text(root / self.CONFIG, recording.model_dump_json(indent=2))
 			for suffix, path in files.items():
 				if suffix != "data.parquet":
 					path.copy(root / "raw" / suffix)
@@ -1568,10 +1739,7 @@ class Project(BaseModel):
 
 	def _save(self) -> None:
 		"""Write the pointer manifest to <project_location>/project.json."""
-		path = self.project_location / self.MANIFEST
-		tmp = path.with_suffix(".json.tmp")
-		tmp.write_text(self.model_dump_json(indent=2), encoding="utf-8")
-		tmp.replace(path)
+		atomic_write_text(self.project_location / self.MANIFEST, self.model_dump_json(indent=2))
 		self.log.info("saved manifest (%d recordings)", len(self.data_catalog))
 
 	@property
@@ -1589,3 +1757,72 @@ class Project(BaseModel):
 				logger.addHandler(handler)
 			self._logger = logger
 		return self._logger
+
+
+class AnalysisRun:
+	"""Analyse recordings of one project on a thread of its own, side by side.
+
+	It starts on construction. The caller runs no thread of its own: it reads
+	:meth:`progress` whenever it wants to show it, and :attr:`done` tells it when to stop.
+	An exception the analysis raises lands in :attr:`error`.
+
+	Args:
+		location: the project folder.
+		names: the recordings to build.
+	"""
+
+	def __init__(
+		self,
+		location: Path,
+		names: list[str],
+		params: AnalysisParams | None = None,
+		*,
+		overwrite: bool = False,
+	) -> None:
+		self._steps = len(DataFrameRegistry.step_order())
+		self._progress = {name: [0, self._steps] for name in names}
+		self._lock = threading.Lock()
+		self._cancel = threading.Event()
+		self._started = time.perf_counter()
+		self.error: Exception | None = None
+		self.elapsed = 0.0
+		self._thread = threading.Thread(
+			target=self._run,
+			args=(Path(location), names, params or AnalysisParams(), overwrite),
+			daemon=True,
+		)
+		self._thread.start()
+
+	@property
+	def done(self) -> bool:
+		"""The analysis has finished, failed or been cancelled."""
+		return not self._thread.is_alive()
+
+	@property
+	def cancelled(self) -> bool:
+		"""Whether :meth:`cancel` was called."""
+		return self._cancel.is_set()
+
+	def cancel(self) -> None:
+		"""Start no further step; the steps in flight still land."""
+		self._cancel.set()
+
+	def progress(self) -> dict[str, list]:
+		"""``{recording: [steps done, steps]}``, as of now."""
+		with self._lock:
+			return dict(self._progress)
+
+	def _run(
+		self, location: Path, names: list[str], params: AnalysisParams, overwrite: bool
+	) -> None:
+		try:
+			with Project.load(location) as project:
+				for event in project.iter_analysis(
+					params, names, overwrite=overwrite, cancel=self._cancel
+				):
+					with self._lock:
+						self._progress[event.recording] = [event.step_index, self._steps]
+		except Exception as exc:  # reported by the caller
+			self.error = exc
+		finally:
+			self.elapsed = time.perf_counter() - self._started
