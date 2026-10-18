@@ -3,6 +3,7 @@ import logging
 import math
 import re
 import textwrap
+import threading
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -15,6 +16,8 @@ lazy import kaleido
 PX_PER_MM = 96 / 25.4
 
 _ROUNDED_CORNERS_JS = Path(__file__).parents[1] / "app" / "assets" / "rounded_corners.js"
+# kaleido's sync server pairs requests with replies through shared queues, so one at a time.
+_KALEIDO_LOCK = threading.Lock()
 
 _CHAR = 0.55
 """Average glyph width as a fraction of font size, for text-fit estimates."""
@@ -841,8 +844,9 @@ def export_figure(
 	# Rounded boxes and tiles are drawn by the app's script, not by plotly, so kaleido's page
 	# loads it too - which figure.write_image has no way to ask for.
 	page = kaleido.PageGenerator(others=[(_ROUNDED_CORNERS_JS.as_uri(), "utf-8")])
-	kaleido.write_fig_sync(
-		fitted, path=path, opts={"format": format, "scale": scale}, kopts={"page_generator": page}
-	)
+	with _KALEIDO_LOCK:
+		# One Chrome per process: without the server kaleido launches one per export, seconds each.
+		kaleido.start_sync_server(page_generator=page, silence_warnings=True)
+		kaleido.write_fig_sync(fitted, path=path, opts={"format": format, "scale": scale})
 
 	return notes

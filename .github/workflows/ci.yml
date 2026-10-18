@@ -68,4 +68,6 @@ jobs:
           enable-cache: true
           python-version: "3.15"
       - name: Run e2e suite
-        run: uv run --locked --extra test --extra app pytest -m e2e
+        # -v names each test on its own log line; faulthandler dumps every thread's stack
+        # if one test runs past 5 min, so a hang (e.g. kaleido's Chrome) shows where it is.
+        run: uv run --locked --extra test --extra app pytest -m e2e -v -o faulthandler_timeout=300
