@@ -936,7 +936,7 @@ def color_points(
 		scaled = ((column - column.min()) / (column.max() - column.min())).fill_nan(0.0)
 		keys = data.select((scaled * POINT_BANDS).floor().clip(0, POINT_BANDS - 1)).to_series()
 		shades = [(step + 0.5) / POINT_BANDS for step in range(POINT_BANDS)]
-		samples = px.colors.sample_colorscale(theme.AURORA, shades)
+		samples = px.colors.sample_colorscale(theme.LAGOON, shades)
 		styles = {
 			step: ("", color, t)
 			for step, (t, color) in enumerate(zip(shades, samples, strict=True))
@@ -1014,7 +1014,7 @@ def color_points(
 	placed = {"len": 0.6, "y": 0.75, "yanchor": "top"} if boxed_legend else {}
 	figure.update_layout(
 		coloraxis={
-			"colorscale": theme.AURORA,
+			"colorscale": theme.LAGOON,
 			"cmin": low,
 			"cmax": high,
 			"colorbar": {"title": {"text": label}, **placed},

@@ -431,62 +431,6 @@ const _unfiltered = {
 	group_mean: (c) => !c.group_mean,
 };
 
-/* Square heatmaps shrink their x axis to the cells and push them toward the colour bar
- * (plot_factory's constraintoward="right"), so a wide card leaves all its spare width left
- * of the matrix. Sliding the drawing back by half of it centres matrix and colour bar as
- * one; the figure title, placed on the whole container, is held where it was. */
-function _centreSquare(gd) {
-	const layout = gd._fullLayout;
-	const xaxis = layout && layout.xaxis;
-	const paper = gd.querySelector(".svg-container");
-	if (!xaxis || !paper) return;
-	const domain = xaxis._inputDomain;
-	const square = xaxis.constrain === "domain" && xaxis.constraintoward === "right";
-	const shift = square ? ((domain[1] - domain[0]) * layout._size.w - xaxis._length) / 2 : 0;
-	const slide = (element, px) => element && (element.style.transform = shift > 0.5 ? `translateX(${px}px)` : "");
-	slide(paper, -shift);
-	slide(gd.querySelector(".g-gtitle"), shift);
-}
-
-/* A side legend wider than this share of the canvas moves below the plot, where it wraps
- * instead of squeezing the plot off the canvas. */
-const _LEGEND_SIDE_MAX = 1 / 3;
-const _LEGEND_BELOW = {orientation: "h", xref: "container", yref: "container", x: 0, xanchor: "left", y: 0, yanchor: "bottom"};
-
-/* Only a legend the figure left in plotly's default place moves; one a figure pinned stays.
- * The side width is measured while it is at the side, so a wider canvas can move it back. */
-function _fitLegend(gd) {
-	const layout = gd._fullLayout;
-	const legend = layout && layout.legend;
-	if (!legend || !layout.showlegend) return;
-	const below = (gd.layout.legend || {}).orientation === "h";
-	if (below && !gd._dehLegendW) return;
-	if (!below) {
-		const placed = gd.layout.legend || {};
-		if (placed.x !== undefined || placed.y !== undefined || placed.orientation) return;
-		gd._dehLegendW = legend._width;
-	}
-	const fits = gd._dehLegendW <= _LEGEND_SIDE_MAX * layout.width;
-	if (below === !fits) return;
-	const keys = Object.keys(_LEGEND_BELOW);
-	const update = Object.fromEntries(keys.map((key) => ["legend." + key, fits ? null : _LEGEND_BELOW[key]]));
-	if (fits) gd._dehLegendW = 0;
-	window.Plotly.relayout(gd, update);
-}
-
-new MutationObserver(() => {
-	document.querySelectorAll(".js-plotly-plot").forEach((gd) => {
-		if (gd._dehAfterplot || !gd.on) return;
-		gd._dehAfterplot = true;
-		gd.on("plotly_afterplot", () => {
-			_centreSquare(gd);
-			_fitLegend(gd);
-		});
-		_centreSquare(gd);
-		_fitLegend(gd);
-	});
-}).observe(document.body, {childList: true, subtree: true});
-
 /* Click events within this many ms of the last one on the same button are one click (clickEvent). */
 const _CLICK_DEBOUNCE_MS = 400;
 const _lastClick = {};
@@ -840,8 +784,7 @@ window.dash_clientside.deh = {
 		});
 	},
 
-	// The same repaint plot_theme.apply does on the server, from looks it sent once: the
-	// template, and the literal colours of the phase band and the event outlines. Only the
+	// The repaint (window.dehRetheme, plot_dom.js) from looks the server sent once. Only the
 	// showing tab's drawn figures still in another theme are set, so a switch redraws just
 	// those and a hidden tab catches up when opened.
 	restyleTheme: function (theme, tab, figures, ids, requests, requestIds, looks) {
@@ -850,18 +793,12 @@ window.dash_clientside.deh = {
 		const ink = look.template.layout.font.color;
 		const tabs = {};
 		requestIds.forEach((id, i) => (tabs[id.plot] = (requests[i] || {}).tab));
-		const repaint = (shape) => {
-			const phase = (shape.name || "").replace("phase-band-", "");
-			if (shape.name === "event-span") return {...shape, line: {...shape.line, color: look.ink2}};
-			return phase in look.bands ? {...shape, fillcolor: look.bands[phase]} : shape;
-		};
 		(figures || []).forEach((fig, i) => {
 			const layout = fig && fig.layout;
 			if (!layout || tabs[ids[i].plot] !== tab) return;
 			const drawn = layout.template && layout.template.layout && layout.template.layout.font;
 			if (drawn && drawn.color === ink) return;
-			const next = {...layout, template: look.template, shapes: (layout.shapes || []).map(repaint)};
-			window.dash_clientside.set_props(ids[i], {figure: {...fig, layout: next}});
+			window.dash_clientside.set_props(ids[i], {figure: {...fig, layout: window.dehRetheme(layout, look)}});
 		});
 	},
 

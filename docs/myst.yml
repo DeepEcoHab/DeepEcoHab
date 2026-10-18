@@ -1,0 +1,22 @@
+version: 1
+project:
+  title: DeepEcoHab
+  description: Fast, interactive analysis of EcoHab recordings.
+  github: https://github.com/DeepEcoHab/DeepEcoHab
+  bibliography:
+    - references.bib
+  toc:
+    - file: index.md
+    - file: data.md
+    - file: app.md
+    - file: analysis.md
+    - file: plotting.md
+    - file: reference.md
+site:
+  template: book-theme
+  options:
+    logo: brand.svg
+    logo_dark: brand-dark.svg
+    logo_text: DeepEcoHab
+    favicon: brand.svg
+    style: style.css

@@ -113,7 +113,7 @@ the pipeline and aggregate a project table.
 
 The data is stored in parquet format - an open-source, column-oriented data storage format which allows extremely fast read/write operations of large dataframes. Every recording in a project keeps one parquet file per analysis table, loaded with `recording.load_results(key)`.
 
-To get the list of available keys call `deepecohab.core.data_model.DataFrameRegistry.list_available()`; similarly `deepecohab.PlotRegistry.list_available()` lists the available visualizations. See the [antenna analysis guide](./docs/tutorial_antenna.md) and [plotting guide](./docs/plotting.md).
+To get the list of available keys call `deepecohab.core.data_model.DataFrameRegistry.list_available()`; similarly `deepecohab.PlotRegistry.list_available()` lists the available visualizations. See [Analyse in Python](https://deepecohab.github.io/DeepEcoHab/analysis), [Data and pipeline](https://deepecohab.github.io/DeepEcoHab/data) and [plotting](https://deepecohab.github.io/DeepEcoHab/plotting).
 
 ## Roadmap
 

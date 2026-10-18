@@ -29,7 +29,7 @@ FONT_SIZE = 13
 #: Corner radius in px of bars, boxes and heatmap tiles alike; rounded_corners.js repeats it.
 CORNER_RADIUS = 6
 
-#: House sequential scale for heatmaps, teal through gold, replacing plain Viridis.
+#: Teal through gold; an alternative to LAGOON in the Format dialog's colour scales.
 _AURORA_STOPS: list[str] = [
 	"rgba(22, 191, 168, 0.8)",  # teal
 	"rgba(30, 155, 224, 0.8)",  # cyan-blue
@@ -50,16 +50,16 @@ AURORA: list[list] = [
 	)
 ]
 
-#: Heatmap scale: the blueprint's three series hues, teal through violet to orange, so a
-#: heatmap sits with the Phase-coloured plots around it. Opacity rises with the value, from
-#: 0.5 to 1. Mid-luminance, so it reads on either ground.
+#: House sequential scale, the default for every heatmap, colour bar and network edge: the
+#: blueprint's three series hues, teal through violet to orange, so a heatmap sits with the
+#: Phase-coloured plots around it. Mid-luminance, so it reads on either ground.
 LAGOON: list[list] = [
-	[0, "rgba(31, 159, 181)"],
-	[0.5, "rgba(118, 80, 200)"],
-	[1, "rgba(194, 85, 31)"],
+	[0, "rgb(31, 159, 181)"],
+	[0.5, "rgb(118, 80, 200)"],
+	[1, "rgb(194, 85, 31)"],
 ]
 
-_COLORSCALE = {"sequential": AURORA, "sequentialminus": "Plasma", "diverging": "curl"}
+_COLORSCALE = {"sequential": LAGOON, "sequentialminus": "Plasma", "diverging": "curl"}
 
 COLORBAR: dict = {
 	# Pixels, like the fonts: a fraction of the plot width swells the bar under browser zoom.
@@ -74,6 +74,7 @@ COLORBAR: dict = {
 
 COLORSCALES: frozendict[str, list] = frozendict(
 	{
+		"Lagoon": LAGOON,
 		"Aurora": AURORA,
 		**{
 			name: px.colors.make_colorscale(getattr(px.colors.sequential, name))

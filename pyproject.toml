@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepecohab"
-version = "0.6.0"
+version = "0.6.1"
 description = "EcoHab with some machine learning"
 readme = "README.md"
 requires-python = ">=3.15"
@@ -68,7 +68,7 @@ dependencies = [
     ]
 
     docs = [
-        "jupyter-book<3",
+        "jupyter-book>=2,<3",
     ]
 
     dev = [

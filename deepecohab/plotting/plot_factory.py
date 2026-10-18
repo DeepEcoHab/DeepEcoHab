@@ -13,7 +13,6 @@ from deepecohab.plotting.export import LEGEND_ITEM_PX, text_px
 from deepecohab.plotting.prepare import READ_KINDS, Heatmap
 from deepecohab.plotting.registry import Figure
 from deepecohab.plotting.theme import (
-	AURORA,
 	COLORBAR,
 	CORNER_RADIUS,
 	EVENT_LOOKS,
@@ -1127,7 +1126,7 @@ def _edge_traces(edges: pl.DataFrame) -> list[dict]:
 	The arrowheads ride the figure's colour axis, so Format can swap its scale; a line
 	cannot, so its colour is sampled here and resampled by the clientside Format.
 	"""
-	colorscale: list[str] = sample_colorscale(AURORA, edges["scaled"].to_list())
+	colorscale: list[str] = sample_colorscale(LAGOON, edges["scaled"].to_list())
 
 	return [
 		{
@@ -1210,7 +1209,7 @@ def plot_network_graph(
 			"showlegend": False,
 			"hovermode": "closest",
 			"title": {"text": title, "x": 0.5, "y": 0.95},
-			"coloraxis": {"colorscale": AURORA, "cmin": 0, "cmax": 1, "showscale": False},
+			"coloraxis": {"colorscale": LAGOON, "cmin": 0, "cmax": 1, "showscale": False},
 			"xaxis": hidden,
 			"yaxis": hidden | {"scaleanchor": "x", "scaleratio": 1},
 			"colorway": colorway,

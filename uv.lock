@@ -346,7 +346,7 @@ wheels = [
 
 [[package]]
 name = "deepecohab"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "." }
 dependencies = [
     { name = "kaleido" },
@@ -408,7 +408,7 @@ requires-dist = [
     { name = "hypothesis", marker = "extra == 'test'" },
     { name = "ipykernel", marker = "extra == 'notebook'" },
     { name = "ipywidgets", marker = "extra == 'notebook'" },
-    { name = "jupyter-book", marker = "extra == 'docs'", specifier = "<3" },
+    { name = "jupyter-book", marker = "extra == 'docs'", specifier = ">=2,<3" },
     { name = "kaleido" },
     { name = "nbformat", marker = "extra == 'notebook'" },
     { name = "networkx" },

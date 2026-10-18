@@ -1,0 +1,221 @@
+/* The app's visual identity (deepecohab/app/assets/app.css), mapped onto the book theme. */
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=Geist+Mono:wght@400..600&display=swap");
+
+:root:root {
+	--ground: #f4f6f6;
+	--surface: #ffffff;
+	--sunken: #eef1f1;
+	--line: #dde3e3;
+	--line-strong: #c9d2d2;
+	--ink: #14201f;
+	--ink-2: #4a5857;
+	--ink-3: #6f7c7b;
+	--accent: #1a7f91;
+	--accent-soft: #e0f1f3;
+	--accent-text: #146a79;
+	--good: #1f7445;
+	--good-soft: #e2f2e8;
+	--warn: #8f5c00;
+	--warn-soft: #fbefd9;
+	--bad: #b4232f;
+	--bad-soft: #fbe5e7;
+	--shadow: 0 1px 2px rgba(20, 32, 31, 0.06);
+	--sans: "Geist", "Segoe UI", system-ui, -apple-system, sans-serif;
+	--mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+html.dark:root {
+	--ground: #0e1414;
+	--surface: #151c1c;
+	--sunken: #1c2525;
+	--line: #273232;
+	--line-strong: #344242;
+	--ink: #e6eeed;
+	--ink-2: #a3b1b0;
+	--ink-3: #7b8988;
+	--accent: #45b5c8;
+	--accent-soft: #143238;
+	--accent-text: #6fcbd9;
+	--good: #5cc58a;
+	--good-soft: #14301f;
+	--warn: #e6b04a;
+	--warn-soft: #33270f;
+	--bad: #f07a82;
+	--bad-soft: #3a1719;
+	--shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+:root:root,
+html.dark:root {
+	--myst-color-bg: var(--ground);
+	--myst-color-bg-secondary: var(--surface);
+	--myst-color-surface: var(--sunken);
+	--myst-color-surface-hover: var(--line);
+	--myst-color-border: var(--line);
+	--myst-color-border-strong: var(--line-strong);
+	--myst-color-text: var(--ink);
+	--myst-color-text-secondary: var(--ink-2);
+	--myst-color-text-tertiary: var(--ink-3);
+	--myst-color-prose-body: var(--ink-2);
+	--myst-color-code: var(--ink);
+	--myst-color-link: var(--accent-text);
+	--myst-color-link-hover: var(--accent);
+	--myst-color-link-underline: var(--accent);
+	--myst-color-primary: var(--accent);
+	--myst-color-primary-hover: var(--accent-text);
+	--myst-color-active: var(--accent);
+	--myst-color-active-bg: var(--accent-soft);
+	--myst-color-active-surface: var(--accent-soft);
+	--myst-color-accent-text: var(--accent-text);
+	--myst-color-accent-surface: var(--accent-soft);
+	--myst-color-accent-surface-text: var(--accent-text);
+	--myst-color-accent-surface-border: var(--accent);
+	--myst-color-focus-outline: var(--accent);
+	--myst-color-focus-ring: var(--accent);
+	--myst-color-info: var(--accent);
+	--myst-color-info-bg: var(--accent-soft);
+	--myst-color-info-text: var(--accent-text);
+	--myst-color-success: var(--good);
+	--myst-color-success-bg: var(--good-soft);
+	--myst-color-success-text: var(--good);
+	--myst-color-warning: var(--warn);
+	--myst-color-warning-bg: var(--warn-soft);
+	--myst-color-warning-text: var(--warn);
+	--myst-color-danger: var(--bad);
+	--myst-color-danger-bg: var(--bad-soft);
+	--myst-color-danger-text: var(--bad);
+	--myst-color-error: var(--bad);
+	--myst-color-error-bg: var(--bad-soft);
+	--myst-color-error-text: var(--bad);
+}
+
+body {
+	font-family: var(--sans);
+	-webkit-font-smoothing: antialiased;
+}
+
+code,
+kbd,
+pre,
+samp {
+	font-family: var(--mono);
+}
+
+h1 {
+	font-weight: 640;
+	letter-spacing: -0.03em;
+}
+
+h2,
+h3 {
+	font-weight: 620;
+	letter-spacing: -0.02em;
+	color: var(--ink);
+}
+
+article strong {
+	color: var(--ink);
+	font-weight: 560;
+}
+
+/* inline code reads as ink on a sunken chip, as in the app's card footers */
+article :not(pre) > code {
+	background: var(--sunken);
+	border-radius: 5px;
+	padding: 0.1em 0.35em;
+	font-size: 0.88em;
+}
+
+/* code blocks, tables, dropdowns and tabs are the app's 12px surface cards */
+article .myst-code,
+article .myst-dropdown,
+article .card {
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	box-shadow: var(--shadow);
+}
+
+article .myst-code {
+	overflow: hidden;
+}
+
+article .myst-code-body.hljs,
+article .myst-code pre {
+	background: transparent;
+	border: 0;
+	font-size: 12.5px;
+	line-height: 1.65;
+}
+
+article table {
+	border-collapse: separate;
+	border-spacing: 0;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	overflow: hidden;
+	font-size: 0.9em;
+	font-variant-numeric: tabular-nums;
+}
+
+article th {
+	font-weight: 500;
+	font-size: 12px;
+	color: var(--ink-3);
+	text-align: left;
+	background: transparent;
+}
+
+article th,
+article td {
+	padding: 10px 14px;
+	border-bottom: 1px solid var(--line);
+}
+
+article tr:last-child td {
+	border-bottom: 0;
+}
+
+article td:first-child {
+	color: var(--ink);
+}
+
+.myst-dropdown-header {
+	background: var(--surface);
+	font-size: 15px;
+	font-weight: 600;
+}
+
+/* sidebar: the app's nav items */
+.myst-toc-item {
+	color: var(--ink-2);
+}
+
+.myst-toc-item.active {
+	color: var(--accent-text);
+	font-weight: 560;
+}
+
+/* section labels in the app are small uppercase mono eyebrows */
+.myst-toc > .myst-toc-item.font-bold,
+.myst-outline-header {
+	font-family: var(--mono);
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	font-size: 11px;
+	color: var(--ink-3);
+}
+
+/* plots sit on the app's card surface; plots.mjs draws them in the app's theme on top */
+article .jp-OutputArea:has(.jp-RenderedPlotly) {
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	box-shadow: var(--shadow);
+	padding: 8px;
+}
+
+article .myst-tab-item-body {
+	box-shadow: none;
+}

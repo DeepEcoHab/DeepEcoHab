@@ -28,9 +28,12 @@ global.window = {
 	dash_clientside: {PreventUpdate: PREVENT, no_update: {}, set_props: () => {}},
 	addEventListener: () => {},
 };
-// The heatmap centring watches the page, which node does not have.
+// plot_dom.js watches the page, which node does not have.
 global.document = {body: {}, addEventListener: () => {}};
 global.MutationObserver = class { observe() {} };
+// The app loads every asset; restyleTheme repaints through plot_dom.js's window.dehRetheme.
+const path = require("path");
+eval(require("fs").readFileSync(path.join(path.dirname(process.argv[2]), "plot_dom.js"), "utf8"));
 eval(require("fs").readFileSync(process.argv[2], "utf8"));
 const deh = window.dash_clientside.deh;
 const wanted = JSON.parse(require("fs").readFileSync(process.argv[3], "utf8"));

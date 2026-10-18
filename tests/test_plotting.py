@@ -88,6 +88,14 @@ def test_palette_is_empty_for_no_values():
 	assert theme.sample_palette(0) == []
 
 
+@pytest.mark.parametrize("name", ["LAGOON", "AURORA"])
+def test_colorscale_stops_parse_in_plotly_js(name):
+	"""plotly.py accepts ``rgba(r, g, b)``, but plotly.js rejects it and swaps in its default."""
+	for _, color in getattr(theme, name):
+		function, args = color.rstrip(")").split("(")
+		assert len(args.split(",")) == {"rgb": 3, "rgba": 4}[function], color
+
+
 # --- durations ---------------------------------------------------------------
 
 
