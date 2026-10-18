@@ -77,8 +77,8 @@ dependencies = [
     deepecohab-shortcut = "deepecohab.app.shortcut:main"
 
     [project.urls]
-    Homepage = "https://github.com/KonradDanielewski/DeepEcoHab"
-    Issues   = "https://github.com/KonradDanielewski/DeepEcoHab/issues"
+    Homepage = "https://github.com/DeepEcoHab/DeepEcoHab"
+    Issues   = "https://github.com/DeepEcoHab/DeepEcoHab/issues"
 
 [tool.setuptools]
 include-package-data = true
@@ -102,7 +102,8 @@ target-version = "py312"
     docstring-code-format = true
 
     [tool.ruff.lint]
-    extend-select = [
+    select = [  # not extend-select: ruff 0.17 widened its default set
+        "ISC004",  # implicit string concat in collection
         "UP",   # pyupgrade
         "D",    # pydocstyle
         "I",    # isort — own import ordering
@@ -113,6 +114,16 @@ target-version = "py312"
         "NPY",  # numpy-specific lints
         "E",  # pycodestyle errors
         "F",  # pyflakes
+        "PGH",  # blanket type: ignore / noqa without a code
+        "ERA",  # commented-out code
+        "PIE",  # unnecessary pass, duplicate class fields, etc.
+        "RET",  # superfluous else/assignment around return
+        "FURB", # refurb — modern idioms
+        "PERF", # slow loop patterns
+        "ICN",  # import conventions — pl, np
+        "DTZ",  # naive datetimes
+        "PT",   # pytest style
+        "PLW1510",  # subprocess.run without check=
     ]
 
     ignore = [
@@ -125,7 +136,7 @@ target-version = "py312"
     ]
 
     [tool.ruff.lint.per-file-ignores]
-    "tests/**" = ["D"]   # no docstring rules in tests
+    "tests/**" = ["D", "DTZ"]   # no docstring rules in tests; naive fixtures are fine
 
     [tool.ruff.lint.pydocstyle]
     convention = "google"

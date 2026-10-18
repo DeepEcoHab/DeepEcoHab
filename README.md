@@ -2,14 +2,14 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/deepecohab.svg)](https://pypi.org/project/deepecohab/)
 [![Python versions](https://img.shields.io/pypi/pyversions/deepecohab.svg)](https://pypi.org/project/deepecohab/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/KonradDanielewski/DeepEcoHab/blob/main/LICENSE)
-[![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://konraddanielewski.github.io/DeepEcoHab/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/DeepEcoHab/DeepEcoHab/blob/main/LICENSE)
+[![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://deepecohab.github.io/DeepEcoHab/)
 
 DeepEcoHab is an analytics platform built for preprocessing, analysis and visualization of data acquired in the DeepEcoHab.
 
 Our backend is built on [Polars](https://pola.rs/) - Extremely fast Query Engine for DataFrames, written in Rust and visualization utilizes [Plotly](https://plotly.com/), providing interactive, high quality and responsive plots of experiments regardless of their length.
 
-📖 **[Read the full documentation](https://konraddanielewski.github.io/DeepEcoHab/)** — installation, the app walkthrough with screenshots and videos, the analysis tables and every plot.
+📖 **[Read the full documentation](https://deepecohab.github.io/DeepEcoHab/)** — installation, the app walkthrough with screenshots and videos, the analysis tables and every plot.
 
 ![The DeepEcoHab recording dashboard](./docs/images/readme-dashboard.png)
 
@@ -98,7 +98,7 @@ To install from source:
 
 ```
 cd location_to_clone_to
-git clone https://github.com/KonradDanielewski/DeepEcoHab.git
+git clone https://github.com/DeepEcoHab/DeepEcoHab.git
 cd DeepEcoHab
 pip install ".[app]"
 ```
@@ -124,17 +124,19 @@ To get the list of available keys call `deepecohab.core.data_model.DataFrameRegi
 
 ## DeepEcoHab team
 
-DeepEcoHab is developed at the Nencki Institute of Experimental Biology in Warsaw:
+DeepEcoHab is developed at Ewelina Knapska's Laboratory of Emotions Neurobiology,
+Nencki Institute of Experimental Biology, Polish Academy of Sciences, Warsaw:
 
 - **Konrad Danielewski** ([@KonradDanielewski](https://github.com/KonradDanielewski)) - lead developer and maintainer
 - **Ula Włodkowska** ([@uwlodkowska](https://github.com/uwlodkowska))
 - **Marcin Lipiec** - principal investigator
+- **Ewelina Knapska** - head of the laboratory
 
 With contributions from [@Winiarsky](https://github.com/Winiarsky) and
 [@Brosnan-neuro](https://github.com/Brosnan-neuro).
 
 Found a bug or missing a feature? Open an issue
-[here](https://github.com/KonradDanielewski/DeepEcoHab/issues).
+[here](https://github.com/DeepEcoHab/DeepEcoHab/issues).
 
 ## Citations
 
@@ -144,10 +146,10 @@ package together with the paper introducing the Eco-HAB system:
 ```bibtex
 @software{deepecohab,
   title     = {{DeepEcoHab}: fast and intuitive data analysis platform for {EcoHab} experiments},
-  author    = {Danielewski, Konrad and W{\l}odkowska, Ula and Lipiec, Marcin},
+  author    = {Danielewski, Konrad and W{\l}odkowska, Ula and Lipiec, Marcin and Knapska, Ewelina},
   year      = {2026},
   publisher = {GitHub},
-  url       = {https://github.com/KonradDanielewski/DeepEcoHab}
+  url       = {https://github.com/DeepEcoHab/DeepEcoHab}
 }
 
 @article{puscian2016ecohab,

@@ -13,9 +13,13 @@ import deepecohab as deh
 project = deh.Project.load("path/to/projects/tsc2")
 recording = project["cohort1_2023_05_17"]
 
-figure = deh.plot("activity-bar", recording)
+figure = deh.to_figure(deh.plot("activity-bar", recording))
 figure.show()
 ```
+
+`deh.plot` returns the figure as the plain dict Plotly draws, which is what the app sends to
+the browser and many times faster to build than a Plotly figure object. `deh.to_figure`
+turns it into a `plotly.graph_objects.Figure`, for showing, theming and saving it.
 
 Options are passed as keyword arguments:
 
@@ -74,9 +78,15 @@ deh.available_attributes(context)
 and tunnel times to seconds and cannot share one colour scale.
 
 **Events.** Plots with a time axis (`recording-timeline`, `cage-preference-evolution`,
-`activity-line`, `chasings-line`, `ranking-line`, `habitat-occupancy`) shade the recording's
-[event bouts](./tutorial_antenna.md#metadata), and `recording-pulse` outlines the hours they
-cover.
+`activity-line`, `chasings-line`, `ranking-line`, `habitat-occupancy`, `recording-pulse`) mark
+the recording's [event bouts](./tutorial_antenna.md#metadata). Above the plot, each event gets
+its own lane, a coloured bar wherever it ran, named beside its first bar; hover the name for
+the cages it ran in. An event keeps its colour on every plot and on the app's events card.
+Inside the plot every event is marked alike, so overlapping events darken rather than mix
+colours: a grey wash behind the data, dotted lines at either end on `habitat-occupancy`,
+outlines on the panels of the event's cage on `cage-preference-evolution`, and outlined hours
+on `recording-pulse`. On a day axis a bout covers the part of its day it ran, not the whole
+day.
 
 **What a plot shows.** `deh.PlotRegistry.spec(name).info` describes what a plot shows and how
 it is calculated, and `.requires` lists the tables it reads.
@@ -179,9 +189,7 @@ labels are thinned:
 ```python
 figure.update_layout(template="publication")
 
-warnings = deh.export_figure(
-	figure, "activity.pdf", width_mm=85, height_mm=60, pt=8, format="pdf"
-)
+warnings = deh.export_figure(figure, "activity.pdf", width_mm=85, height_mm=60, pt=8, format="pdf")
 ```
 
 `format` is `"svg"`, `"pdf"` or `"png"`; a PNG also takes `dpi` (300 by default). `title`,

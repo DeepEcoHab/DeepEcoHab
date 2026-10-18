@@ -102,7 +102,7 @@ layout = html.Div(
 					debounce=150,
 					className="deh-search",
 					classNames={"input": "deh-input"},
-					**{"aria-label": "Filter projects and recordings"},  # ty: ignore[invalid-argument-type]
+					**{"aria-label": "Filter projects and recordings"},
 				),
 				html.Button(
 					[icon("plus", size=16), "Add project"],
@@ -217,8 +217,10 @@ layout = html.Div(
 													html.Code("ranking.parquet"),
 													" renamed ",
 													html.Code("<recording>.parquet"),
-													" is stored with that recording, as each "
-													"animal's last rating.",
+													(
+														" is stored with that recording, as each "
+														"animal's last rating."
+													),
 												]
 											),
 										],
@@ -378,8 +380,10 @@ layout = html.Div(
 										html.Code("<name>.data.parquet"),
 										" and ",
 										html.Code("<name>.diagnostic.json"),
-										". Files are copied into the project under the name "
-										"the config carries.",
+										(
+											". Files are copied into the project under the name "
+											"the config carries."
+										),
 									]
 								),
 							],
@@ -662,7 +666,7 @@ def _recording_row(
 					disabled=not loadable or progress is not None,
 					size="xs",
 					radius="xs",
-					**{"aria-label": f"Select {name}"},  # ty: ignore[invalid-argument-type]
+					**{"aria-label": f"Select {name}"},
 				),
 				className="c-check",
 			),
@@ -854,7 +858,7 @@ def _project_detail(
 								disabled=not loadable or progress is not None,
 								size="xs",
 								radius="xs",
-								**{"aria-label": f"Select all recordings in {project['name']}"},  # ty: ignore[invalid-argument-type]
+								**{"aria-label": f"Select all recordings in {project['name']}"},
 							),
 							className="c-check",
 						),
@@ -999,8 +1003,15 @@ def _render_projects(paths, search, failed, _written, active, progress, selectio
 	Input("selection", "data"),
 	Input("run-progress", "data"),
 	Input("run-active", "data"),
+	State("overwrite", "checked"),
 )
-def _render_actionbar(selection, progress, active):
+def _render_actionbar(selection, progress, active, overwrite):
+	# The run's first report waits on its worker spawning; paint step 0 the moment it starts.
+	# Here because a running background callback holds back callbacks fed by its outputs,
+	# like the table's, while this one still runs.
+	if active and progress is None:
+		progress = services.pending_progress(selection, overwrite)
+		set_props("run-progress", {"data": progress})
 	if active and progress:
 		jobs = [job for recordings in progress.values() for job in recordings.values()]
 		done = sum(steps for steps, _, _ in jobs)
@@ -1308,8 +1319,10 @@ def _replace_prompt(queue: dict) -> tuple:
 	names = queue["waiting"]
 	text = [
 		html.B(names[0]),
-		" is already in this project. Replacing it discards its results, so it must be "
-		"analysed again.",
+		(
+			" is already in this project. Replacing it discards its results, so it must be "
+			"analysed again."
+		),
 	]
 	more = len(names) - 1
 	label = f"Do the same for the {more} other recording{'s' if more > 1 else ''} already here"

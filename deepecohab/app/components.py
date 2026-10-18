@@ -8,7 +8,6 @@ from urllib.parse import quote
 
 import dash
 import dash_mantine_components as dmc
-import plotly.graph_objects as go
 from dash import dcc, html
 
 from deepecohab.core.data_model import Layout
@@ -252,7 +251,7 @@ def export_dialog() -> dmc.Modal:
 	return dmc.Modal(
 		id="export-dialog",
 		title="Export plot",
-		size=760,
+		size=1200,
 		classNames=DIALOG_CLASSES,
 		children=html.Div(
 			[
@@ -283,10 +282,10 @@ def export_dialog() -> dmc.Modal:
 							_seg(
 								"export-style",
 								[
-									{"value": "publication", "label": "Publication"},
 									{"value": "app", "label": "App theme"},
+									{"value": "publication", "label": "Publication"},
 								],
-								"publication",
+								"app",
 							),
 						),
 						_field_row(
@@ -294,11 +293,11 @@ def export_dialog() -> dmc.Modal:
 							_seg(
 								"export-format",
 								[
+									{"value": "png", "label": "PNG"},
 									{"value": "svg", "label": "SVG"},
 									{"value": "pdf", "label": "PDF"},
-									{"value": "png", "label": "PNG"},
 								],
-								"svg",
+								"png",
 							),
 						),
 						_field_row(
@@ -370,19 +369,19 @@ def export_dialog() -> dmc.Modal:
 									dmc.Checkbox(
 										id="export-title-toggle",
 										label="Title",
-										checked=False,
+										checked=True,
 										size="xs",
 									),
 									dmc.Checkbox(
 										id="export-events",
-										label="Event labels",
-										checked=True,
+										label="Events",
+										checked=False,
 										size="xs",
 									),
 									dmc.Checkbox(
 										id="export-csv",
 										label="Plotted data as CSV, in one zip",
-										checked=True,
+										checked=False,
 										size="xs",
 									),
 								],
@@ -427,7 +426,9 @@ def export_dialog() -> dmc.Modal:
 	)
 
 
-def export_preview(fig: dict[str, Any], title: str, form: dict[str, Any]) -> dict[str, Any]:
+def export_preview(
+	fig: dict[str, Any], title: str, form: dict[str, Any], data: dict[str, Any] | None = None
+) -> dict[str, Any]:
 	"""Fit ``fig`` for the export dialog's current settings and describe the result.
 
 	Both the live preview and the actual download go through
@@ -441,6 +442,8 @@ def export_preview(fig: dict[str, Any], title: str, form: dict[str, Any]) -> dic
 		title: the card's title, drawn only when the Title checkbox is on.
 		form: the dialog's current control values - style, format, width_mm, height_mm,
 			pt, dpi, legend, title_on, events, csv and filename.
+		data: what the export route rebuilds the plot's data from for the CSV
+			(see ``downloads._plotted``), or ``None`` when the plot has none.
 
 	Returns:
 		The fitted preview figure, warning alerts, a dimensions caption, whether this
@@ -454,16 +457,12 @@ def export_preview(fig: dict[str, Any], title: str, form: dict[str, Any]) -> dic
 		"width_mm": min(max(form["width_mm"], EXPORT_WIDTH_MM[0]), EXPORT_WIDTH_MM[1]),
 		"height_mm": min(max(form["height_mm"], EXPORT_HEIGHT_MM[0]), EXPORT_HEIGHT_MM[1]),
 	}
-	working = go.Figure(fig)
-	if form["style"] == "publication":
-		working.update_layout(template="publication")
-
-	shapes = working.layout.shapes or ()
-	has_events = any(s.label and s.label.text for s in shapes)
+	shapes = fig.get("layout", {}).get("shapes") or ()
+	has_events = any(s.get("name") == "event-span" for s in shapes)
 	show_events = has_events and form["events"]
 
 	fitted, notes = plot_export.fit_for_export(
-		working,
+		plot_export.styled(fig, form["style"]),
 		form["width_mm"],
 		form["height_mm"],
 		form["pt"],
@@ -472,14 +471,14 @@ def export_preview(fig: dict[str, Any], title: str, form: dict[str, Any]) -> dic
 		show_events,
 	)
 
-	has_csv = bool(plot_export.figure_data_csv(fig))
+	has_csv = data is not None
 	dims = f"{form['width_mm']:g} x {form['height_mm']:g} mm · {form['pt']:g} pt"
 	if form["format"] == "png":
 		px = round(form["width_mm"] / 25.4 * form["dpi"])
 		py = round(form["height_mm"] / 25.4 * form["dpi"])
 		dims += f" · {form['dpi']:g} dpi = {px} x {py} px"
 
-	payload_params = {**form, "title": title, "csv": form["csv"] and has_csv}
+	payload_params = {**form, "title": title, "csv": form["csv"] and has_csv, "data": data}
 	return {
 		"figure": fitted,
 		"warnings": [
@@ -716,7 +715,7 @@ def habitat_map(
 		html.Div(
 			className="deh-hab",
 			style={"height": f"{height}px"} if height else {},
-			**{"data-hab": _habitat_svg(layout, label, antenna_stats)},  # ty: ignore[invalid-argument-type]
+			**{"data-hab": _habitat_svg(layout, label, antenna_stats)},
 		),
 		html.Div(
 			[

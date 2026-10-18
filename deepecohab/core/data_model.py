@@ -9,7 +9,7 @@ import warnings
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from itertools import combinations, pairwise, product
+from itertools import combinations, pairwise, permutations
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Final, Literal, NamedTuple, overload
 from zoneinfo import ZoneInfo
@@ -196,7 +196,7 @@ class Cohort(BaseModel):
 		Chasings outcomes distinguish the two roles, so A-beats-B and
 		B-beats-A are separate cells.
 		"""
-		return [(a, b) for a, b in product(self.animal_tags, self.animal_tags) if a != b]
+		return list(permutations(self.animal_tags, 2))
 
 
 class Timeline(BaseModel):
@@ -709,23 +709,6 @@ class Recording(BaseModel):
 
 		return pl.read_parquet(path) if eager else pl.scan_parquet(path)
 
-	def update_notes(self, notes: str, tag: str | None = None) -> None:
-		"""Set this recording's notes, or one animal's, and persist them to its config.json.
-
-		Args:
-			notes: the new notes text.
-			tag: an animal's tag to set that animal's notes instead of the recording's.
-
-		Raises:
-			ValueError: the recording is not attached to a project (see `root`).
-			KeyError: ``tag`` is not one of this recording's animals.
-		"""
-		if tag is None:
-			self.notes = notes
-		else:
-			{animal.tag: animal for animal in self.cohort.animals}[tag].notes = notes
-		(self.root / "config.json").write_text(self.model_dump_json(indent=2), encoding="utf-8")
-
 	@property
 	def prev_ranking(self) -> pl.DataFrame | None:
 		"""The ratings this recording's ranking starts from; ``None`` when it starts fresh."""
@@ -1174,6 +1157,27 @@ class Project(BaseModel):
 
 		return AddReport(added, failed, existing, replaced)
 
+	def update_notes(self, name: str, notes: str, tag: str | None = None) -> None:
+		"""Set a recording's notes, or one of its animals', and persist them to its config.json.
+
+		Args:
+			name: the recording to annotate.
+			notes: the new notes text.
+			tag: an animal's tag to set that animal's notes instead of the recording's.
+
+		Raises:
+			KeyError: no recording ``name``, or ``tag`` is not one of its animals.
+		"""
+		recording = self[name]
+		if tag is None:
+			recording.notes = notes
+		else:
+			{animal.tag: animal for animal in recording.cohort.animals}[tag].notes = notes
+		(recording.root / self.CONFIG).write_text(
+			recording.model_dump_json(indent=2), encoding="utf-8"
+		)
+		self.log.info("%s: notes updated%s", name, f" for animal {tag}" if tag else "")
+
 	def remove_recording(self, name: str, *, delete_files: bool = False) -> None:
 		"""Removes recording from project.
 
@@ -1257,12 +1261,9 @@ class Project(BaseModel):
 		total = len(self._select(names)) * len(DataFrameRegistry.step_order(targets))
 		events = self.iter_analysis(params, names, targets, overwrite=overwrite, workers=workers)
 
-		# Logging stays on this side: the workers only emit events, so the lazily attached
-		# file handler is never raced for.
 		bar = tqdm(events, total=total, desc="analysis", unit="step")
 		for progress in bar:
 			bar.set_postfix_str(f"{progress.recording}: {progress.step}")
-			self.log.info("%s: built %s", progress.recording, progress.step)
 
 	def generate_project_table(self, names: Iterable[str] | None = None) -> pl.LazyFrame:
 		"""Combine every recording's features into one table on a shared timeline.
@@ -1415,11 +1416,16 @@ class Project(BaseModel):
 			futures = [pool.submit(analyse, recording) for recording in recordings]
 			pending = len(futures)
 
+			# Logging stays on this side: the workers only emit events, so the lazily attached
+			# file handler is never raced for.
 			while pending:
 				if (event := events.get()) is None:
 					pending -= 1
 				else:
+					self.log.info("%s: built %s", event.recording, event.step)
 					yield event
+			if cancel.is_set():
+				self.log.warning("cancelled; steps in flight finished")
 
 			for future in futures:
 				try:

@@ -78,6 +78,8 @@ layout = html.Div(
 		# every state change, which would otherwise fire their server callbacks each time.
 		dcc.Store(id="builder-action"),
 		dcc.Store(id="preset-delete-event"),
+		dcc.Store(id="preset-deleted"),
+		dcc.Store(id="preset-revert"),
 		dcc.Store(id="preset-select-event"),
 		dcc.Store(id="builder-preset-selected"),
 		dcc.Store(id="preset-save-thumb"),
@@ -384,7 +386,7 @@ def _chip(
 		className="deh-fchip",
 		draggable="true",
 		title=f"{field.label.capitalize()} — {field.group} · {field.kind}",
-		**{"data-field": field.name, "data-kind": field.kind, "data-from": source},  # ty: ignore[invalid-argument-type]
+		**{"data-field": field.name, "data-kind": field.kind, "data-from": source},
 	)
 
 
@@ -454,7 +456,7 @@ def _shelves_children(fields: list[catalog.Field], state: dict) -> list:
 					html.Div(body, className="deh-shelf-body"),
 				],
 				className="deh-shelf deh-shelf-required" if required else "deh-shelf",
-				**{"data-shelf": channel, "data-accepts": accepts},  # ty: ignore[invalid-argument-type]
+				**{"data-shelf": channel, "data-accepts": accepts},
 			)
 		)
 	return blocks
@@ -543,7 +545,7 @@ def _types_children(state: dict) -> list:
 			[icon(PLOT_ICON.get(plot.name, "chart-dots"), size=22), html.Span(plot.label)],
 			id={"type": "builder-kind", "kind": plot.name},
 			className="deh-type-btn",
-			**{"aria-pressed": "true" if plot.name == state["kind"] else "false"},  # ty: ignore[invalid-argument-type]
+			**{"aria-pressed": "true" if plot.name == state["kind"] else "false"},
 		)
 		for plot in figure.PLOTS
 	]
@@ -560,18 +562,43 @@ def _mode_children(state: dict) -> list:
 	]
 
 
+def _awaits_fields(state: dict) -> bool:
+	"""Whether a shelf the plot type needs is still empty, so there is no plot to adjust."""
+	required = figure.plot_type(state["kind"]).required
+	return any(not state["channels"].get(channel) for channel in required)
+
+
 def _outlier_children(state: dict) -> list:
 	"""Keep or exclude outliers, for the plot types that draw a box's spread; empty otherwise."""
-	if state["kind"] not in figure.POINTED:
+	if state["kind"] not in figure.POINTED or _awaits_fields(state):
 		return []
-	chosen = state.get("outliers", "keep")
 	return [
-		html.Button(
-			f"{key.capitalize()} outliers",
-			id={"type": "builder-outliers", "mode": key},
-			className="deh-seg-btn" + (" is-active" if key == chosen else ""),
+		dmc.Checkbox(
+			id={"type": "builder-outliers", "kind": state["kind"]},
+			label="Exclude outliers",
+			checked=state.get("outliers") == "exclude",
+			size="xs",
 		)
-		for key in ("keep", "exclude")
+	]
+
+
+def _option_children(state: dict) -> list:
+	"""The plot type's own layout choice (bar mode, box mode, line shape); empty if it has none."""
+	if state["kind"] not in figure.OPTIONS or _awaits_fields(state):
+		return []
+	argument, choices = figure.OPTIONS[state["kind"]]
+	name = argument.replace("_", " ").replace("mode", " mode").capitalize()
+	return [
+		html.Span(name, className="deh-sub"),
+		dmc.Select(
+			id={"type": "builder-option", "option": argument},
+			data=[{"value": value, "label": label} for value, label in choices.items()],
+			value=state.get(argument, next(iter(choices))),
+			allowDeselect=False,
+			size="xs",
+			w=110,
+			**{"aria-label": name},
+		),
 	]
 
 
@@ -622,7 +649,7 @@ def _preset_item(entry: dict, selected: bool, loaded: bool) -> html.Button:
 		children,
 		id={"type": "preset-select", "id": entry["id"]},
 		className="deh-preset",
-		**{"aria-pressed": "true" if selected else "false"},  # ty: ignore[invalid-argument-type]
+		**{"aria-pressed": "true" if selected else "false"},
 	)
 
 
@@ -674,28 +701,36 @@ def _preset_preview(entry: dict, project) -> list:
 
 def _alerts_children(note_texts: list[str]) -> list:
 	return [
+		# The id keys the node, a note that changes is a fresh alert rather than the dismissed one.
 		html.Div(
-			[icon("alert-triangle", size=16), html.Span(text)], className="deh-alert deh-alert-warn"
+			[
+				icon("alert-triangle", size=16),
+				html.Span(text),
+				html.Button(
+					icon("x", size=14),
+					className="deh-icon-btn sm deh-alert-close",
+					title="Dismiss",
+				),
+			],
+			id={"type": "builder-alert", "text": text},
+			className="deh-alert deh-alert-warn",
 		)
 		for text in note_texts
 	]
 
 
-def _graph_title(state: dict, last_preset: dict | None) -> tuple[list, bool]:
-	"""The graph card's title children, and whether Reset has nothing to reset to."""
-	modified = last_preset is None or state != last_preset.get("state")
-	title = last_preset["name"] if last_preset else "Untitled plot"
-	head_label = [html.B(title)]
-	if modified:
-		tail = " · not saved as a preset" if last_preset is None else " (edited)"
-		head_label.append(html.Span(tail, className="deh-sub"))
-	return head_label, last_preset is None
+def _plot_title(last_preset: dict | None, state: dict) -> str:
+	shelved = any(state["channels"].values())
+	return last_preset["name"] if last_preset and shelved else "Untitled plot"
 
 
-def _graph_head(title_children: list, reset_disabled: bool) -> html.Div:
+def _graph_head(reset_disabled: bool, state: dict) -> html.Div:
 	"""The graph card's head: built once by ``_dashboard`` and never remounted.
 
-	``_render`` updates ``builder-graph-title``/``builder-reset`` in place instead of
+	The plot type's own choices sit here rather than in the page toolbar, so they stay in
+	view beside the plot they change.
+
+	``_render`` updates ``builder-reset`` in place instead of
 	replacing this whole block - Dash treats a remounted component as new, so a button
 	here remounting on every state change fired its own callback with no real click
 	behind it (the export dialog used to pop open on any edit).
@@ -703,49 +738,56 @@ def _graph_head(title_children: list, reset_disabled: bool) -> html.Div:
 	return html.Div(
 		[
 			html.Div(
-				title_children,
-				id="builder-graph-title",
-				style={
-					"display": "flex",
-					"flex": "1",
-					"minWidth": "0",
-					"alignItems": "baseline",
-					"gap": "4px",
-				},
+				[
+					html.Div(
+						_option_children(state), id="builder-option-row", className="deh-graph-ctl"
+					),
+					html.Div(
+						_outlier_children(state),
+						id="builder-outlier-row",
+						className="deh-graph-ctl",
+					),
+				],
+				className="deh-graph-ctls",
 			),
-			html.Button(
-				[icon("refresh", size=14), "Reset"],
-				id="builder-reset",
-				className="deh-btn deh-btn-ghost sm",
-				disabled=reset_disabled,
-				title="Back to the last preset you loaded",
-			),
-			html.Button(
-				[icon("template", size=15), "Presets"],
-				id="builder-presets-open",
-				className="deh-btn deh-btn-ghost sm",
-			),
-			html.Button(
-				[icon("bookmark-plus", size=15), "Save preset"],
-				id="builder-save-head",
-				className="deh-btn deh-btn-ghost sm",
-			),
-			html.Button(
-				icon("format", size=15),
-				id="builder-format",
-				className="deh-icon-btn sm",
-				title="Format this plot",
-			),
-			html.Button(
-				icon("download", size=15),
-				id="builder-export",
-				className="deh-icon-btn sm",
-				title="Export this plot",
-			),
-			html.Button(
-				[icon("maximize", size=15), icon("x", size=15)],
-				className="deh-icon-btn sm deh-card-max",
-				title="Open this plot full screen",
+			html.Div(
+				[
+					html.Button(
+						[icon("refresh", size=14), "Reset"],
+						id="builder-reset",
+						className="deh-btn deh-btn-ghost sm",
+						disabled=reset_disabled,
+						title="Back to the last preset you loaded",
+					),
+					html.Button(
+						[icon("template", size=15), "Presets"],
+						id="builder-presets-open",
+						className="deh-btn deh-btn-ghost sm",
+					),
+					html.Button(
+						[icon("bookmark-plus", size=15), "Save preset"],
+						id="builder-save-head",
+						className="deh-btn deh-btn-ghost sm",
+					),
+					html.Button(
+						icon("format", size=15),
+						id="builder-format",
+						className="deh-icon-btn sm",
+						title="Format this plot",
+					),
+					html.Button(
+						icon("download", size=15),
+						id="builder-export",
+						className="deh-icon-btn sm",
+						title="Export this plot",
+					),
+					html.Button(
+						[icon("maximize", size=15), icon("x", size=15)],
+						className="deh-icon-btn sm deh-card-max",
+						title="Open this plot full screen",
+					),
+				],
+				className="deh-graph-actions",
 			),
 		],
 		className="deh-graph-head",
@@ -757,22 +799,23 @@ def _graph_children(
 	fields: list[catalog.Field],
 	state: dict,
 	theme: str,
+	title: str,
 ):
 	fig, note_texts = figure.build_figure(frame, _plain_state(state), fields)
-	# The top margin keeps room for a title set through Format.
+	# The title is the preset's name; Format can replace it.
 	fig.update_layout(
 		template=theme or "light",
 		margin={"t": 48},
-		title={"x": 0, "xref": "paper", "xanchor": "left"},
+		title={"text": title, "x": 0, "xref": "paper", "xanchor": "left"},
 	)
 
 	return fig, note_texts
 
 
-def _drawn(state: dict, theme: str | None) -> dict:
+def _drawn(state: dict, theme: str | None, title: str) -> dict:
 	"""What the graph is drawn from: all but Format, which the browser draws on it."""
 	plot = {key: value for key, value in state.items() if key != "format"}
-	return {"state": plot, "theme": theme}
+	return {"state": plot, "theme": theme, "title": title}
 
 
 def _status_text(project, frame: pl.LazyFrame) -> str:
@@ -812,19 +855,19 @@ def _bare(paths: list[str] | None, pid: str | None, message: str) -> html.Div:
 def _dashboard(
 	project, location, paths, frame, fields, state, last_preset, theme, search=""
 ) -> html.Div:
-	fig, note_texts = _graph_children(frame, fields, state, theme)
-	title_children, reset_disabled = _graph_title(state, last_preset)
+	title = _plot_title(last_preset, state)
+	fig, note_texts = _graph_children(frame, fields, state, theme, title)
 	graph_card = html.Div(
 		[
 			# Beside the graph rather than in the page's layout: _render writes it, and a
 			# callback with only some of its outputs mounted fires off the builder page too.
-			dcc.Store(id="builder-drawn", data=_drawn(state, theme)),
+			dcc.Store(id="builder-drawn", data=_drawn(state, theme, title)),
 			components.format_dialog(
 				"builder",
 				"Empty means automatic. Saved with the preset.",
 				{"title": {}, "sharey": {}},
 			),
-			_graph_head(title_children, reset_disabled),
+			_graph_head(last_preset is None, state),
 			dcc.Graph(
 				id="builder-graph",
 				figure=fig,
@@ -840,9 +883,6 @@ def _dashboard(
 				[
 					_project_picker(paths, services.project_id(location)),
 					html.Div(_mode_children(state), id="builder-mode-row", className="deh-seg-row"),
-					html.Div(
-						_outlier_children(state), id="builder-outlier-row", className="deh-seg-row"
-					),
 					html.Span(className="deh-grow"),
 					html.Span(
 						_status_text(project, frame), id="builder-status", className="deh-b-status"
@@ -874,7 +914,7 @@ def _dashboard(
 							),
 						],
 						className="deh-rail deh-palette",
-						**{"data-shelf": PALETTE, "data-accepts": "dimension time measure"},  # ty: ignore[invalid-argument-type]
+						**{"data-shelf": PALETTE, "data-accepts": "dimension time measure"},
 					),
 					html.Div(
 						[
@@ -894,7 +934,7 @@ def _dashboard(
 							html.Div(_filters_children(frame, fields, state), id="builder-filters"),
 						],
 						className="deh-rail deh-filters",
-						**{"data-shelf": FILTERS, "data-accepts": "dimension time"},  # ty: ignore[invalid-argument-type]
+						**{"data-shelf": FILTERS, "data-accepts": "dimension time"},
 					),
 				],
 				className="deh-builder",
@@ -1007,11 +1047,11 @@ def _render_palette(search, kind, project_data):
 	Output("builder-shelves", "children"),
 	Output("builder-filters", "children"),
 	Output("builder-alerts", "children"),
-	Output("builder-graph-title", "children"),
 	Output("builder-reset", "disabled"),
 	Output("builder-graph", "figure"),
 	Output("builder-types", "children"),
 	Output("builder-mode-row", "children"),
+	Output("builder-option-row", "children"),
 	Output("builder-outlier-row", "children"),
 	Output("builder-drawn", "data"),
 	Input("builder-state", "data"),
@@ -1031,22 +1071,22 @@ def _render(state, theme, project_data, last_preset, last_drawn):
 	fields = catalog.in_age_unit(fields, state.get("age_unit", "days"))
 
 	# Format is drawn in the browser, so a change to it alone leaves the figure be.
-	drawn = _drawn(state, theme)
+	title = _plot_title(last_preset, state)
+	drawn = _drawn(state, theme, title)
 	if drawn == last_drawn:
 		fig = alerts = no_update
 	else:
-		fig, note_texts = _graph_children(frame, fields, state, theme)
+		fig, note_texts = _graph_children(frame, fields, state, theme, title)
 		alerts = _alerts_children(note_texts)
-	title_children, reset_disabled = _graph_title(state, last_preset)
 	return (
 		_shelves_children(fields, state),
 		_filters_children(frame, fields, state),
 		alerts,
-		title_children,
-		reset_disabled,
+		last_preset is None,
 		fig,
 		_types_children(state),
 		_mode_children(state),
+		_option_children(state),
 		_outlier_children(state),
 		drawn,
 	)
@@ -1058,7 +1098,7 @@ clientside_callback(
 	Output("builder-format-modal", "opened"),
 	Output({"type": "builder-fmt", "key": ALL}, "value"),
 	Output({"type": "builder-fmt", "key": ALL}, "placeholder"),
-	Output({"type": "builder-fmt", "key": ALL}, "disabled"),
+	Output({"type": "builder-fmt", "key": ALL}, "style"),
 	Output({"type": "builder-fmt", "key": "palette"}, "data"),
 	Input("builder-format", "n_clicks"),
 	State("builder-graph", "figure"),
@@ -1096,7 +1136,6 @@ clientside_callback(
 	Input({"type": "chip-send", "field": ALL, "from": ALL, "to": ALL}, "n_clicks"),
 	Input({"type": "builder-kind", "kind": ALL}, "n_clicks"),
 	Input({"type": "builder-mode", "mode": ALL}, "n_clicks"),
-	Input({"type": "builder-outliers", "mode": ALL}, "n_clicks"),
 	Input("builder-clear", "n_clicks"),
 	Input("builder-reset", "n_clicks"),
 	Input({"type": "preset-pick", "id": ALL}, "n_clicks"),
@@ -1193,6 +1232,8 @@ def _presets_dialog(
 	Input({"type": "chip-bin", "field": ALL}, "value"),
 	Input({"type": "filter-pick", "field": ALL}, "value"),
 	Input({"type": "filter-range", "field": ALL}, "value"),
+	Input({"type": "builder-option", "option": ALL}, "value"),
+	Input({"type": "builder-outliers", "kind": ALL}, "checked"),
 	State("builder-state", "data"),
 	State("builder-project", "data"),
 	State("builder-last-preset", "data"),
@@ -1207,6 +1248,8 @@ def _reduce(
 	_bin_specs,
 	_pick_values,
 	_range_values,
+	_option_values,
+	_outlier_checks,
 	state,
 	project_data,
 	last_preset,
@@ -1246,13 +1289,22 @@ def _reduce(
 			state["measure_as"] = mode
 			return state, no_update
 
-		case {"type": "builder-outliers", "mode": mode}:
-			if state.get("outliers", "keep") == mode:
+		case {"type": "builder-option", "option": option}:
+			value = ctx.triggered[0]["value"]
+			choices = figure.OPTIONS.get(state["kind"], ("", {}))
+			if option != choices[0] or state.get(option, next(iter(choices[1]))) == value:
 				raise PreventUpdate
-			if mode == "keep":
-				state.pop("outliers", None)
+			state[option] = value
+			return state, no_update
+
+		case {"type": "builder-outliers"}:
+			exclude = bool(ctx.triggered[0]["value"])
+			if (state.get("outliers") == "exclude") == exclude:
+				raise PreventUpdate
+			if exclude:
+				state["outliers"] = "exclude"
 			else:
-				state["outliers"] = mode
+				state.pop("outliers", None)
 			return state, no_update
 
 		case {"type": "chip-x", "shelf": shelf, "field": name}:
@@ -1422,6 +1474,7 @@ def _save_preset_modal(
 @callback(
 	Output("builder-presets-local", "data", allow_duplicate=True),
 	Output("builder-presets-bump", "data", allow_duplicate=True),
+	Output("preset-deleted", "data"),
 	Input("preset-delete-event", "data"),
 	State("builder-presets-local", "data"),
 	State("builder-project", "data"),
@@ -1432,12 +1485,61 @@ def _delete_preset(event, saved_local, project_data, bump):
 	pid, scope = event["id"]["id"], event["id"]["scope"]
 
 	if scope == "project":
-		services.delete_saved_preset(project_data["location"], pid)
-		notify("info", "Deleted from builder_presets.json.")
-		return no_update, (bump or 0) + 1
+		location = project_data["location"]
+		removed = next(p for p in services.load_saved_presets(location) if p["id"] == pid)
+		services.delete_saved_preset(location, pid)
+		where, saved_local = "builder_presets.json", no_update
+	else:
+		removed = next(p for p in saved_local or [] if p["id"] == pid)
+		where, saved_local = "this browser", [p for p in saved_local if p["id"] != pid]
 
-	notify("info", "Deleted from this browser.")
-	return [preset for preset in saved_local or [] if preset["id"] != pid], (bump or 0) + 1
+	# Toast content is outside Dash's layout, so the button is wired in clientside.js.
+	dash.set_props(
+		"notifications",
+		{
+			"sendNotifications": [
+				{
+					"id": "preset-deleted",
+					"action": "show",
+					"message": html.Div(
+						[
+							f"Deleted “{removed['name']}” from {where}.",
+							html.Button(
+								"Revert",
+								type="button",
+								className="deh-btn deh-btn-primary sm deh-preset-revert",
+							),
+						],
+						className="deh-toast-inline",
+					),
+					"className": "deh-toast deh-toast-info",
+					"withCloseButton": False,
+					"autoClose": 7000,
+				}
+			]
+		},
+	)
+	return saved_local, (bump or 0) + 1, {"preset": removed, "scope": scope}
+
+
+@callback(
+	Output("builder-presets-local", "data", allow_duplicate=True),
+	Output("builder-presets-bump", "data", allow_duplicate=True),
+	Input("preset-revert", "data"),
+	State("preset-deleted", "data"),
+	State("builder-presets-local", "data"),
+	State("builder-project", "data"),
+	State("builder-presets-bump", "data"),
+	prevent_initial_call=True,
+)
+def _revert_preset_delete(_, deleted, saved_local, project_data, bump):
+	if not deleted:
+		raise PreventUpdate
+	preset = deleted["preset"]
+	if deleted["scope"] == "project":
+		services.save_preset(project_data["location"], preset)
+		return no_update, (bump or 0) + 1
+	return [*(saved_local or []), preset], (bump or 0) + 1
 
 
 @callback(
@@ -1446,11 +1548,12 @@ def _delete_preset(event, saved_local, project_data, bump):
 	Output("export-filename", "value", allow_duplicate=True),
 	Input("builder-export", "n_clicks"),
 	State("builder-graph", "figure"),
+	State("builder-state", "data"),
 	State("builder-last-preset", "data"),
 	State("builder-project", "data"),
 	prevent_initial_call=True,
 )
-def _open_export(_clicks, fig, last_preset, project_data):
+def _open_export(_clicks, fig, state, last_preset, project_data):
 	if not _clicks or not fig:
 		raise PreventUpdate
 	title = (fig["layout"].get("title") or {}).get("text") or (
@@ -1458,4 +1561,10 @@ def _open_export(_clicks, fig, last_preset, project_data):
 	)
 	project_name = services.load_project(project_data["location"]).project_name
 	filename = f"{project_name}__{title}".lower().replace(" ", "-")
-	return True, {"figure": fig, "title": title}, filename
+	# A placeholder carries no traces, so there is nothing to tabulate.
+	data = (
+		{"builder": {"location": project_data["location"], "state": _plain_state(state)}}
+		if fig.get("data")
+		else None
+	)
+	return True, {"figure": fig, "title": title, "data": data}, filename

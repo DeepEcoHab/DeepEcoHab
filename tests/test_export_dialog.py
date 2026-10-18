@@ -38,7 +38,7 @@ def test_publication_style_overrides_the_figures_own_template():
 
 	result = export_preview(fig, "Title", _form(style="publication"))
 
-	assert result["figure"].layout.template.layout.paper_bgcolor == "#ffffff"
+	assert result["figure"]["layout"]["template"]["layout"]["paper_bgcolor"] == "#ffffff"
 
 
 def test_app_style_keeps_the_figures_own_template():
@@ -46,7 +46,7 @@ def test_app_style_keeps_the_figures_own_template():
 
 	result = export_preview(fig, "Title", _form(style="app"))
 
-	assert result["figure"].layout.template.layout.paper_bgcolor == "rgba(0,0,0,0)"
+	assert result["figure"]["layout"]["template"]["layout"]["paper_bgcolor"] == "rgba(0,0,0,0)"
 
 
 def test_title_only_drawn_when_toggled_on():
@@ -55,31 +55,30 @@ def test_title_only_drawn_when_toggled_on():
 	off = export_preview(fig, "My plot", _form(title_on=False))
 	on = export_preview(fig, "My plot", _form(title_on=True))
 
-	assert off["figure"].layout.title.text == ""
-	assert on["figure"].layout.title.text == "My plot"
+	assert off["figure"]["layout"]["title"]["text"] == ""
+	assert on["figure"]["layout"]["title"]["text"] == "My plot"
 
 
-def test_has_events_is_false_without_event_labels():
+def test_has_events_is_false_without_event_spans():
 	fig = go.Figure(go.Scatter(x=[1], y=[1])).to_dict()
 
 	assert export_preview(fig, "T", _form())["has_events"] is False
 
 
-def test_has_events_is_true_with_an_event_label():
+def test_has_events_is_true_with_an_event_span():
 	fig = go.Figure(
 		go.Scatter(x=[1], y=[1]),
-		layout={"shapes": [{"name": "event-label", "type": "rect", "label": {"text": "Tone"}}]},
+		layout={"shapes": [{"name": "event-span", "type": "rect"}]},
 	).to_dict()
 
 	assert export_preview(fig, "T", _form())["has_events"] is True
 
 
-def test_has_csv_reflects_whether_the_figure_has_tabular_data():
+def test_has_csv_reflects_whether_the_plot_has_data_to_rebuild():
 	xy = go.Figure(go.Scatter(x=[1], y=[1])).to_dict()
-	pie = go.Figure(go.Pie(labels=["a"], values=[1])).to_dict()
 
-	assert export_preview(xy, "T", _form())["has_csv"] is True
-	assert export_preview(pie, "T", _form())["has_csv"] is False
+	assert export_preview(xy, "T", _form(), {"plot": "activity-bar"})["has_csv"] is True
+	assert export_preview(xy, "T", _form())["has_csv"] is False
 
 
 def test_a_partly_typed_size_is_clamped_to_the_inputs_limits():
@@ -102,9 +101,11 @@ def test_png_dims_caption_includes_pixel_size():
 def test_payload_carries_the_original_unfitted_figure_and_resolved_params():
 	fig = go.Figure(go.Scatter(x=[1], y=[1]), layout={"template": "dark"}).to_dict()
 
-	result = export_preview(fig, "T", _form(csv=True))
+	data = {"plot": "activity-bar", "request": {}}
+	result = export_preview(fig, "T", _form(csv=True), data)
 
 	assert json.loads(result["payload_figure"]) == fig
 	params = json.loads(result["payload_params"])
 	assert params["title"] == "T"
 	assert params["csv"] is True
+	assert params["data"] == data

@@ -504,14 +504,13 @@ def test_update_notes_persists_to_config_json(tmp_path):
 		project_name="notes", experimenter="tester", location=tmp_path / "project"
 	)
 	project.add_recording(*files)
-	project["noted"].update_notes("checked the water bottles twice a day")
+	project.update_notes("noted", "checked the water bottles twice a day")
 
 	reloaded = Project.load(project.project_location)
 	assert reloaded["noted"].notes == "checked the water bottles twice a day"
 
 
-def test_update_notes_through_the_app_leaves_a_line_in_the_project_log(tmp_path):
-	"""The GUI's only silent mutation: notes changed from the app land in project.log."""
+def test_update_notes_leaves_a_line_in_the_project_log(tmp_path):
 	recording = strategies.analysis_recording(
 		tz=TZ, start="2023-05-24 00:00:00", finish="2023-05-25 00:00:00"
 	)
@@ -522,7 +521,7 @@ def test_update_notes_through_the_app_leaves_a_line_in_the_project_log(tmp_path)
 		project_name="notes", experimenter="tester", location=tmp_path / "project"
 	)
 	project.add_recording(*files)
-	services.update_notes(str(project.project_location), "noted", "water bottles checked", tag="A")
+	project.update_notes("noted", "water bottles checked", tag="A")
 
 	log = (project.project_location / Project.LOGFILE).read_text(encoding="utf-8")
 	assert "noted: notes updated for animal A" in log
@@ -570,7 +569,7 @@ def test_update_notes_with_a_tag_persists_to_one_animal(tmp_path):
 		project_name="notes", experimenter="tester", location=tmp_path / "project"
 	)
 	project.add_recording(*files)
-	project["noted"].update_notes("skittish since the cage change", tag="A")
+	project.update_notes("noted", "skittish since the cage change", tag="A")
 
 	reloaded = Project.load(project.project_location)
 	by_tag = {animal.tag: animal for animal in reloaded["noted"].cohort.animals}

@@ -11,14 +11,23 @@ The example data ships with the repository, so this test never skips: if the
 data is gone, that is the failure.
 """
 
+import io
+import json
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import urlencode
 
 import plotly.graph_objects as go
 import polars as pl
 import pytest
+from dash import Dash, html
+from plotly.io.json import to_json_plotly
 
 import deepecohab as deh
+from deepecohab.app import downloads, services
+from deepecohab.app.builder import figure as builder_figure, presets
+from deepecohab.app.components import export_preview
 from deepecohab.auxiliary_analysis.tube_test import calculate_tube_test
 from deepecohab.core.data_model import DataFrameRegistry
 from deepecohab.plotting import PlotContext, PlotRegistry
@@ -28,6 +37,19 @@ pytestmark = pytest.mark.e2e
 DATA_DIR = Path(__file__).resolve().parent.parent / "examples" / "data"
 STEPS = DataFrameRegistry.step_order()
 PLOTS = PlotRegistry.list_available()
+#: The export dialog's defaults, as its render callback hands them to export_preview.
+EXPORT_FORM = {
+	"style": "publication",
+	"format": "svg",
+	"width_mm": 85.0,
+	"height_mm": 64.0,
+	"pt": 8.0,
+	"dpi": 300,
+	"legend": True,
+	"title_on": False,
+	"events": True,
+	"csv": True,
+}
 
 
 @pytest.fixture(scope="session")
@@ -280,10 +302,30 @@ def test_project_table_aggregates_every_recording(project):
 # --- plots -------------------------------------------------------------------
 
 
+def assert_plotly_accepts(figure: dict, label: str) -> None:
+	"""plotly takes every key of ``figure`` and changes none of its values.
+
+	A plot is built as a plain dict, so this is the validation plotly's own figure objects
+	would have run: an unknown key raises, and a key plotly.js would not read - an
+	underscored shorthand such as ``line_width`` - comes back rewritten.
+	"""
+
+	# Rounded: plotly's angle validator wraps an angle, which moves its last digits.
+	def read(payload: str) -> dict:
+		return json.loads(payload, parse_float=lambda text: round(float(text), 9))
+
+	sent = read(to_json_plotly(figure))
+	accepted = read(go.Figure(figure).to_json())
+	accepted["layout"].pop("template", None)
+
+	assert accepted == sent, label
+
+
 @pytest.mark.parametrize("plot_name", PLOTS)
 def test_plot_builds_for_every_option_value(context, plot_name):
-	"""Every registered plot builds on real tables, for each value of each option."""
-	assert isinstance(deh.plot(plot_name, context), go.Figure)
+	"""Every registered plot builds on real tables, for each value of each option, into a
+	figure plotly accepts as it is."""
+	assert_plotly_accepts(deh.plot(plot_name, context), plot_name)
 
 	for option in PlotRegistry.spec(plot_name).options_for(context):
 		for choice in option.choices:
@@ -291,4 +333,80 @@ def test_plot_builds_for_every_option_value(context, plot_name):
 			value = [choice] if isinstance(option.default, (list, tuple)) else choice
 			figure = deh.plot(plot_name, context, **{option.name: value})
 
-			assert isinstance(figure, go.Figure), f"{plot_name}[{option.name}={choice}]"
+			assert_plotly_accepts(figure, f"{plot_name}[{option.name}={choice}]")
+
+
+@pytest.fixture(scope="module")
+def export_client():
+	"""The export route on a Dash server, whose request hooks run as they do in the app.
+
+	A Dash app also has to exist for export_preview's warning icons to resolve their assets.
+	"""
+	app = Dash(__name__)
+	app.layout = html.Div()  # Dash's first-request hook refuses to serve without one
+	app.server.register_blueprint(downloads.bp)
+	return app.server.test_client()
+
+
+@pytest.mark.parametrize("plot_name", PLOTS)
+def test_plot_downloads_from_the_export_dialog(project, context, export_client, plot_name):
+	"""Every registered plot downloads with the dialog's defaults, posted as the dialog posts
+	it, with the frames it was drawn from as CSV beside the image."""
+	form = {**EXPORT_FORM, "filename": plot_name}
+	# JSON round-tripped, as dcc.Graph hands the figure over: no numpy arrays or datetimes.
+	figure = json.loads(to_json_plotly(deh.plot(plot_name, context)))
+	# As deh.plotRequest sends it for a card left at its defaults.
+	request = {
+		"context": {
+			"location": str(project.project_location),
+			"recording": project.recordings[0].name,
+		},
+		"controls": {},
+		"opts": {},
+	}
+	payload = export_preview(figure, plot_name, form, {"plot": plot_name, "request": request})
+
+	# Encoded as the browser encodes a form, escaping every JSON delimiter: Werkzeug's test
+	# client leaves some unescaped and so posts a smaller body than the dialog does.
+	body = urlencode({"figure": payload["payload_figure"], "params": payload["payload_params"]})
+	resp = export_client.post(
+		"/export", data=body, content_type="application/x-www-form-urlencoded"
+	)
+
+	assert resp.status_code == 200, resp.get_data(as_text=True)[:200]
+	frames = PlotRegistry.data(plot_name, context)
+	with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+		names = zf.namelist()
+		csvs = {name: pl.read_csv(zf.read(name)) for name in names if name.endswith(".csv")}
+	assert f"{plot_name}.svg" in names
+	assert [csv.height for csv in csvs.values()] == [frame.height for frame in frames.values()]
+
+
+def test_builder_plot_downloads_its_drawn_rows(project, export_client):
+	"""A builder plot's CSV is one row per drawn point, outliers flagged rather than dropped."""
+	# The time-alone preset, filters in the plain shape the builder page hands figure.py.
+	state = {
+		**presets.BY_ID["time-alone-genotype-sex"].state,
+		"filters": {"metric": ["time_alone"]},
+		"outliers": "exclude",
+	}
+	frame, fields = services.builder_frame(str(project.project_location))
+	figure, _ = builder_figure.build_figure(frame, state, fields)
+	data = {"builder": {"location": str(project.project_location), "state": state}}
+	payload = export_preview(
+		json.loads(figure.to_json()), "Time alone", {**EXPORT_FORM, "filename": "b"}, data
+	)
+
+	body = urlencode({"figure": payload["payload_figure"], "params": payload["payload_params"]})
+	resp = export_client.post(
+		"/export", data=body, content_type="application/x-www-form-urlencoded"
+	)
+
+	assert resp.status_code == 200, resp.get_data(as_text=True)[:200]
+	with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+		csv = pl.read_csv(zf.read("b.csv"))
+	animals = sum(len(recording.cohort.animals) for recording in project.recordings)
+	assert csv.height == animals
+	assert {"genotype", "sex", "recording", "animal id", "excluded_outlier"} <= set(csv.columns)
+	drawn = sum(len(trace.y) for trace in figure.data)
+	assert csv.filter(~pl.col("excluded_outlier")).height == drawn

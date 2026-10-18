@@ -93,18 +93,20 @@ def _lines(log: Path, count: int, timeout: float = 60) -> list[str]:
 
 
 def test_helper_upgrades_once_the_app_exits_then_restarts_it(tmp_path):
-	# The app outlives spawning the helper by a second: an upgrade logged before "app
+	# The app outlives spawning the helper by a few seconds: an upgrade logged before "app
 	# exited" would mean the helper did not wait for it.
 	log = tmp_path / "log"
 	app = _IMPORT_UPDATER + (
 		"import json, os, time\n"
 		"updater.spawn_helper(*json.loads(sys.argv[1]))\n"
-		"time.sleep(1)\n"
+		"time.sleep(3)\n"
 		"open(sys.argv[2], 'a').write('app exited' + chr(10))\n"
 		"os._exit(0)\n"
 	)
 	commands = [_append(log, "upgraded"), _append(log, "restarted")]
-	subprocess.run([sys.executable, "-c", app, json.dumps(commands), str(log)], timeout=60)
+	subprocess.run(
+		[sys.executable, "-c", app, json.dumps(commands), str(log)], check=True, timeout=60
+	)
 
 	assert _lines(log, 3) == ["app exited", "upgraded", "restarted"]
 

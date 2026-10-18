@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 from dash import Dash
+from plotly.io.json import to_json_plotly
 
 Dash(__name__, use_pages=True, pages_folder="")
 
@@ -83,23 +84,47 @@ eq(
 fire({type: "card-fullscreen", plot: "ranking-line"}, null);
 prevents(() => deh.fullscreen(null, figures, ids, titles, titleIds), "a rebuild is not a click");
 
-fire({type: "card-export", plot: "activity-bar"}, 1);
+// in yet another order: a request that has not been filled in yet is only {tab}
+const requestIds = [{plot: "ranking-line"}, {plot: "activity-bar"}, {plot: "chasings-heatmap"}];
+const filled = {context: {recording: "Cohort 1 WT"}, opts: {}};
+const requests = [{tab: "social"}, filled, {tab: "social"}];
+const exportOf = (plot, context) => {
+	fire({type: "card-export", plot: plot}, 1);
+	const args = [null, figures, ids, titles, titleIds, context, requests, requestIds, null];
+	return deh.openExport(...args);
+};
+
 eq(
-	deh.openExport(null, figures, ids, titles, titleIds, {recording: "Cohort 1 WT"}),
+	exportOf("activity-bar", {recording: "Cohort 1 WT"}),
 	[
 		true,
-		{figure: figures[0], title: "Activity per position"},
+		{
+			figure: figures[0],
+			title: "Activity per position",
+			data: {plot: "activity-bar", request: filled, x_range: null},
+		},
 		wanted.filename,
 	],
-	"openExport carries the figure, title and filename"
+	"openExport carries the figure, title, filename and the request that drew the plot"
 );
-
-fire({type: "card-export", plot: "activity-bar"}, 1);
+eq(exportOf("ranking-line", null)[1].data, null, "a card not drawn from a request has no data");
 eq(
-	deh.openExport(null, figures, ids, titles, titleIds, null)[2],
+	exportOf("activity-bar", null)[2],
 	"recording__activity-bar",
 	"openExport falls back when there is no recording context"
 );
+
+const zoomedSpan = ["2023-05-24 01:00", "2023-05-24 02:00"];
+const timelineIds = [{plot: "recording-timeline"}];
+const exportedZoom = (zoom) => {
+	fire({type: "card-export", plot: "recording-timeline"}, 1);
+	const figure = {data: [], layout: {xaxis: {range: zoomedSpan}}};
+	const request = {context: {recording: "r"}, opts: {}};
+	const args = [null, [figure], timelineIds, [], [], null, [request], timelineIds, zoom];
+	return deh.openExport(...args)[1].data.x_range;
+};
+eq(exportedZoom(zoomedSpan), zoomedSpan, "a zoomed timeline exports the span it shows");
+eq(exportedZoom(["a", "b"]), null, "a zoom the timeline was since redrawn without is left out");
 
 // --- switchTab: the rec-tab mirror plotRequest reads (rec-tabs itself is built into rec-body,
 // too late to be an Input), with the tab written into the address bar alone, not url.search.
@@ -289,14 +314,14 @@ const request = (
 ) => {
 	window.dash_clientside.callback_context = {
 		triggered_id: trigger,
-		inputs_list: [null, null, null, null, options],
+		inputs_list: [null, null, null, options],
 		states_list: [
 			Object.entries(stores).map(([plot, value]) => ({id: {type: "plot-req", plot}, value})),
 			badges,
 		],
 	};
 	sets.length = 0;
-	deh.plotRequest(context, controls, tab, "dark", options, hover);
+	deh.plotRequest(context, controls, tab, options, hover);
 	return Object.fromEntries(sets.map(([id, props]) => [id.plot, props.data]));
 };
 const uses = ["window", "granularity"];
@@ -305,7 +330,6 @@ const drawn = {
 	uses,
 	context,
 	controls: {window: [1, 2], granularity: "day"},
-	theme: "dark",
 	opts: {metric: "time"},
 };
 eq(
@@ -373,8 +397,47 @@ eq(
 	"a widened control hides its badge again"
 );
 sets.length = 0;
-deh.plotRequest(null, null, "activity", "dark");
+deh.plotRequest(null, null, "activity");
 eq(sets.length, 0, "no recording, no request");
+
+// --- restyleTheme: drawn figures repainted in place, the showing tab only ---------------
+const looks = {
+	dark: {
+		template: {layout: {font: {color: "#eee"}}},
+		bands: {dark_phase: "#d1", light_phase: "#d2"},
+		ink2: "#dink",
+	},
+};
+const lightFig = {
+	data: [],
+	layout: {
+		template: {layout: {font: {color: "#111"}}},
+		shapes: [
+			{name: "phase-band-dark_phase", fillcolor: "#l1"},
+			{name: "event-span", line: {color: "#link", width: 1}},
+			{name: "other", fillcolor: "#keep"},
+		],
+	},
+};
+const restyle = (figures, tab = "activity") => {
+	sets.length = 0;
+	const ids = figures.map((_, i) => ({type: "plot", plot: "p" + i}));
+	deh.restyleTheme("dark", tab, figures, ids, ids.map(() => ({tab: "activity"})), ids, looks);
+	return sets.map(([, props]) => props.figure);
+};
+const [repainted] = restyle([lightFig, null]);
+eq(repainted.layout.template, looks.dark.template, "the template is swapped");
+eq(
+	repainted.layout.shapes,
+	[
+		{name: "phase-band-dark_phase", fillcolor: "#d1"},
+		{name: "event-span", line: {color: "#dink", width: 1}},
+		{name: "other", fillcolor: "#keep"},
+	],
+	"phase bands and event outlines take the theme's colours, other shapes are kept"
+);
+eq(restyle([repainted]).length, 0, "a figure already in the theme is left alone");
+eq(restyle([lightFig], "social").length, 0, "a hidden tab's figure waits until it shows");
 
 // --- colorBy: the cohort cards redraw for a new colour only ---------------------------
 eq(deh.colorBy({color_by: "sex"}, "animal_id"), "sex", "colorBy passes a new colour on");
@@ -687,7 +750,7 @@ const fields = ["colorbar", "cmin", "colorscale"].map((key) => ({id: {type: "rec
 window.dash_clientside.callback_context.outputs_list = [null, null, null, fields];
 eq(
 	deh.openFormat(null, [wanted.network], ids, ["P"], ids, {}, wanted.colors)[5],
-	[true, true, false],
+	[{display: "none"}, {display: "none"}, null],
 	"a hidden colour bar offers its scale but no title or bounds"
 );
 
@@ -752,7 +815,7 @@ def test_format_draws_and_clears(tmp_path):
 	import plotly.express as px
 	import polars as pl
 
-	from deepecohab.plotting import plot_factory
+	from deepecohab.plotting import plot_factory, prepare
 	from deepecohab.plotting.theme import COLORSCALES, PALETTES
 
 	frame = pl.DataFrame({"a": [1, 2, 3, 4], "b": [1, 2, 1, 2], "g": ["p", "q", "p", "q"]})
@@ -772,13 +835,22 @@ def test_format_draws_and_clears(tmp_path):
 		"colorscale": {"on": "", "value": "Viridis"},
 	}
 
-	network = plot_factory.plot_network_graph(
+	nodes, edges = prepare._network_layout(
 		pl.DataFrame({"source": ["a", "b"], "target": ["b", "c"], "chasings": [3.0, 1.0]}),
-		pl.DataFrame({"animal_id": ["a", "b", "c"], "ordinal": [30.0, 20.0, 10.0]}),
-		["a", "b", "c"],
-		["#111111", "#222222", "#333333"],
 		"chasings",
+		True,
+		{"a": 30.0, "b": 20.0, "c": 10.0},
 		"circular",
+		0,
+	)
+	network = plot_factory.plot_network_graph(
+		nodes,
+		edges,
+		["#111111", "#222222", "#333333"],
+		["#111111", "#222222", "#333333"],
+		["a", "b", "c"],
+		"<b>Network</b>",
+		include_ranking=True,
 	)
 
 	wanted = {
@@ -786,9 +858,9 @@ def test_format_draws_and_clears(tmp_path):
 		"auto": auto,
 		"fmt": fmt,
 		"colors": {"colorscale": COLORSCALES, "palette": PALETTES},
-		"network": json.loads(network.to_json()),
+		"network": json.loads(to_json_plotly(network)),
 		"networkViridis": px.colors.sample_colorscale(
-			COLORSCALES["Viridis"], [edge.marker.color[0] for edge in network.data[:-1]]
+			COLORSCALES["Viridis"], [edge["marker"]["color"][0] for edge in network["data"][:-1]]
 		),
 	}
 	_run(tmp_path, _FORMAT_HARNESS, wanted)

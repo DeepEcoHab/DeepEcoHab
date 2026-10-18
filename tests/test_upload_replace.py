@@ -77,13 +77,15 @@ def test_nothing_is_replaced_until_confirmed_and_apply_to_all_covers_the_rest(pr
 	opened, _, label, *_, queue, _ = _fire(
 		projects._replace_recordings, "replace-pending.data", pending, None, None, None, False
 	)
-	assert opened and "2 other recordings" in label
+	assert opened
+	assert "2 other recordings" in label
 
 	# Skip the first, then replace the remaining two at once.
 	opened, *_, queue, _ = _fire(
 		projects._replace_recordings, "replace-skip.n_clicks", pending, 1, None, queue, False
 	)
-	assert opened and queue["waiting"] == ["r2", "r3"]
+	assert opened
+	assert queue["waiting"] == ["r2", "r3"]
 	with pytest.warns(UserWarning, match="Replaced 2 recordings"):
 		opened, *_ = _fire(
 			projects._replace_recordings, "replace-confirm.n_clicks", pending, 1, 1, queue, True
@@ -91,5 +93,6 @@ def test_nothing_is_replaced_until_confirmed_and_apply_to_all_covers_the_rest(pr
 
 	assert not opened
 	assert _genotypes(project) == {"r1": "WT", "r2": "KO", "r3": "KO"}
-	assert toasts[-1][0] == "warn" and "Replaced r2, r3" in toasts[-1][1]
+	assert toasts[-1][0] == "warn"
+	assert "Replaced r2, r3" in toasts[-1][1]
 	assert not Path(pending["staging"]).exists()

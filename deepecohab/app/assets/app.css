@@ -527,6 +527,17 @@ code {
 	margin-top: 1px;
 }
 
+.deh-alert:has(.deh-alert-close) {
+	position: relative;
+	padding-right: 36px;
+}
+
+.deh-alert-close {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+}
+
 .deh-alert pre {
 	max-height: 160px;
 	margin: 6px 0 0;
@@ -606,6 +617,29 @@ code {
 	font-weight: 500;
 	text-align: left;
 	white-space: nowrap;
+}
+
+.deh-tbl.mini:not(.deh-ev-table) th:not(:empty) {
+	cursor: pointer;
+	user-select: none;
+}
+
+.deh-tbl th[aria-sort]::after {
+	content: "";
+	display: inline-block;
+	margin-left: 6px;
+	border: 4px solid transparent;
+	vertical-align: middle;
+}
+
+.deh-tbl th[aria-sort="ascending"]::after {
+	border-bottom-color: currentColor;
+	border-top-width: 0;
+}
+
+.deh-tbl th[aria-sort="descending"]::after {
+	border-top-color: currentColor;
+	border-bottom-width: 0;
 }
 
 .deh-tbl td {
@@ -929,7 +963,7 @@ code {
 .deh-export-stage {
 	position: relative;
 	flex: 1;
-	min-height: 360px;
+	min-height: 520px;
 	overflow: hidden;
 }
 
@@ -1078,6 +1112,18 @@ code {
 	gap: 8px;
 	justify-content: flex-end;
 	margin-top: 8px;
+}
+
+.mantine-Notification-root.deh-toast:has(.deh-toast-inline) {
+	width: fit-content;
+	padding-right: 96px;
+}
+
+.deh-toast-inline .deh-btn {
+	position: absolute;
+	top: 50%;
+	right: 12px;
+	transform: translateY(-50%);
 }
 
 .mantine-Notification-root.deh-toast-good::before {
@@ -1305,6 +1351,14 @@ code {
 
 .deh-tabs-gap {
 	margin-top: 14px;
+}
+
+/* Inset the tab strip and its rule by the card radius, so the line stops where the rounded
+   corners of the cards around it start to curve. */
+.deh-tabs-gap > .mantine-Tabs-list {
+	--tabs-list-line-start: 12px;
+	--tabs-list-line-end: 12px;
+	padding-inline: 12px;
 }
 
 /* Mantine hides an inactive panel with an inline display: none, where a plot prefetched into
@@ -2150,6 +2204,7 @@ code {
 }
 
 .deh-graph-card {
+	container: deh-graph / inline-size;
 	display: flex;
 	flex-direction: column;
 	aspect-ratio: 4 / 3;
@@ -2172,9 +2227,47 @@ code {
 
 .deh-graph-head {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 8px;
 	padding: 2px 2px 4px 8px;
+}
+
+/* Wraps as one unit, so a narrow card moves every action to its own row together. */
+.deh-graph-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-left: auto;
+}
+
+.deh-graph-ctls {
+	display: flex;
+	gap: 14px;
+}
+
+.deh-graph-ctls:not(:has(.deh-graph-ctl:not(:empty))) {
+	display: none;
+}
+
+.deh-graph-ctl {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12.5px;
+	white-space: nowrap;
+}
+
+.deh-graph-ctl:empty {
+	display: none;
+}
+
+/* Too narrow for one line: the plot's own choices drop to a row under the title. */
+@container deh-graph (max-width: 980px) {
+	.deh-graph-ctls {
+		order: 1;
+		flex-basis: 100%;
+	}
 }
 
 .deh-graph-head b {
@@ -2191,6 +2284,11 @@ code {
 	display: grid;
 	grid-template-columns: 1fr 1fr;
 	gap: 8px;
+}
+
+/* A pair whose fields are both hidden would still take a gap in the dialog. */
+.deh-format-pair:not(:has(> :not([style*="display: none"]))) {
+	display: none;
 }
 
 .deh-filter-block {

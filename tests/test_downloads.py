@@ -19,6 +19,7 @@ from flask import Flask
 
 from deepecohab.app import downloads, services
 from deepecohab.core.data_model import Project, Recording
+from deepecohab.plotting import PlotRegistry
 
 ROUTE = [1, 2, 3, 2]
 
@@ -202,7 +203,48 @@ def test_export_renders_an_image(client):
 	assert resp.mimetype == "image/svg+xml"
 
 
-def test_export_bundles_csv_when_requested(client):
+def test_export_bundles_the_frame_the_plot_was_drawn_from(client, project):
+	test_client, _ = client
+	fig = go.Figure(go.Scatter(x=[1, 2], y=[3, 4])).to_dict()
+	location = str(project.project_location)
+	request = {
+		"context": {"location": location, "recording": "rec1"},
+		"controls": {"hours": [0, 23]},
+		"opts": {"metric": "visits"},
+	}
+	params = _export_params(csv=True, data={"plot": "activity-bar", "request": request})
+
+	resp = test_client.post(
+		"/export", data={"figure": json.dumps(fig), "params": json.dumps(params)}
+	)
+
+	assert resp.mimetype == "application/zip"
+	with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+		assert set(zf.namelist()) == {"plot.svg", "plot.csv"}
+		csv = pl.read_csv(zf.read("plot.csv"))
+	(frame,) = PlotRegistry.data(
+		"activity-bar", services.plot_context(location, "rec1"), metric="visits"
+	).values()
+	assert csv.columns == frame.columns
+	assert csv.height == frame.height > 0
+
+
+def test_export_names_one_csv_per_frame(client, monkeypatch):
+	test_client, _ = client
+	fig = go.Figure(go.Scatter(x=[1, 2], y=[3, 4])).to_dict()
+	frames = {"nodes": pl.DataFrame({"a": [1]}), "edges": pl.DataFrame({"b": [2]})}
+	monkeypatch.setattr(downloads, "_plotted", lambda _: frames)
+	params = _export_params(csv=True, data={"plot": "network-dominance"})
+
+	resp = test_client.post(
+		"/export", data={"figure": json.dumps(fig), "params": json.dumps(params)}
+	)
+
+	with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+		assert set(zf.namelist()) == {"plot.svg", "plot_nodes.csv", "plot_edges.csv"}
+
+
+def test_export_without_data_is_the_image_alone(client):
 	test_client, _ = client
 	fig = go.Figure(go.Scatter(x=[1, 2], y=[3, 4])).to_dict()
 
@@ -210,23 +252,21 @@ def test_export_bundles_csv_when_requested(client):
 		"/export", data={"figure": json.dumps(fig), "params": json.dumps(_export_params(csv=True))}
 	)
 
-	assert resp.mimetype == "application/zip"
-	with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
-		assert {"plot.svg", "plot.csv"} <= set(zf.namelist())
+	assert resp.mimetype == "image/svg+xml"
 
 
-def test_export_numbers_one_csv_per_subplot(client):
+def test_export_takes_a_figure_past_werkzeugs_default_form_limit(client):
+	# A long recording's timeline posts megabytes of figure JSON, url-encoded on top.
 	test_client, _ = client
-	fig = go.Figure(go.Scatter(x=[1, 2], y=[3, 4]))
-	fig.add_trace(go.Bar(x=[7], y=["A"], orientation="h", xaxis="x2", yaxis="y2"))
+	points = list(range(100_000))
+	fig = go.Figure(go.Scattergl(x=points, y=points)).to_json()
+	assert len(fig) > 500_000
 
 	resp = test_client.post(
-		"/export",
-		data={"figure": fig.to_json(), "params": json.dumps(_export_params(csv=True))},
+		"/export", data={"figure": fig, "params": json.dumps(_export_params(format="png"))}
 	)
 
-	with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
-		assert set(zf.namelist()) == {"plot.svg", "plot_1.csv", "plot_2.csv"}
+	assert resp.status_code == 200
 
 
 def test_export_malformed_request_is_a_400(client):

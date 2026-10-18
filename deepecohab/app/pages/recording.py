@@ -6,7 +6,6 @@ from urllib.parse import parse_qs, quote, urlencode
 
 import dash
 import dash_mantine_components as dmc
-import plotly.graph_objects as go
 from dash import (
 	ALL,
 	MATCH,
@@ -22,7 +21,6 @@ from dash import (
 	no_update,
 )
 from dash.exceptions import PreventUpdate
-from plotly.colors import qualitative
 
 from deepecohab.app import components, services
 from deepecohab.app.components import icon, notify
@@ -38,7 +36,8 @@ from deepecohab.plotting.animals import resolve_colors
 from deepecohab.plotting.plot_catalog import PHASES
 from deepecohab.plotting.plot_factory import FACETS_PER_LINE
 from deepecohab.plotting.prepare import READ_KINDS
-from deepecohab.plotting.theme import COLORSCALES, PALETTES
+from deepecohab.plotting.registry import Figure
+from deepecohab.plotting.theme import COLORSCALES, EVENT_LOOKS, PALETTES
 
 PATH = "/recording"
 
@@ -46,16 +45,6 @@ dash.register_page(
 	__name__, path=PATH, name="Recording dashboard", order=1, icon="layout-dashboard"
 )
 
-#: Driven by the control bar rather than a per-card control: builder option -> rec-controls key.
-_GLOBAL_OPTIONS = {
-	"days_range": "window",
-	"granularity": "granularity",
-	"phase_type": "phases",
-	"color_by": "color_by",
-	"label_by": "label_by",
-	"hours_range": "hours",
-	"group_mean": "group_mean",
-}
 #: The filters a card can ignore, as (icon, label, tooltip); deh.plotRequest shows the badge
 #: while its control is narrowed.
 _BADGES = {
@@ -173,6 +162,10 @@ layout = html.Div(
 		dcc.Store(id="rec-format", storage_type="session"),
 		dcc.Store(id="rec-format-target"),
 		dcc.Store(id="rec-colors", data={"colorscale": COLORSCALES, "palette": PALETTES}),
+		# What deh.restyleTheme repaints a drawn figure with, so a theme switch rebuilds nothing.
+		dcc.Store(
+			id="rec-looks", data={name: plot_theme.looks(name) for name in ("light", "dark")}
+		),
 		components.format_dialog(
 			"rec", "Empty means automatic. Applies to this plot on every recording."
 		),
@@ -455,7 +448,7 @@ def _plot_card(name: str, context: PlotContext, height: int, tab: str) -> list:
 	spec = PlotRegistry.spec(name)
 	missing = [table for table in spec.requires if table not in context]
 	accepted = {option.name for option in spec.options}
-	uses = [key for option, key in _GLOBAL_OPTIONS.items() if option in accepted]
+	uses = [key for option, key in services.GLOBAL_OPTIONS.items() if option in accepted]
 	badges = [
 		html.Span(
 			[icon(glyph, size=14), label],
@@ -531,7 +524,7 @@ def _plot_card(name: str, context: PlotContext, height: int, tab: str) -> list:
 		body = _needs(*missing, hint="Run analysis for this recording to build it.")
 		return [header, body, html.Footer(_reads(spec.requires), className="deh-card-foot")]
 
-	options = [option for option in spec.options if option.name not in _GLOBAL_OPTIONS]
+	options = [option for option in spec.options if option.name not in services.GLOBAL_OPTIONS]
 	return [
 		header,
 		html.Div([_option_control(name, option) for option in options], className="deh-card-opts")
@@ -824,15 +817,15 @@ def _events_card_children(recording: Recording) -> list:
 	"""Every bout on one strip across the recording, then each event's bouts in full.
 
 	Drawn from the config alone, as the habitat map is, so it renders before analysis. An
-	event's colour is its place among the recording's events, the rule ``_event_spans``
-	colours spans by, so a bar here matches its span on every plot.
+	event's colour is its place among the recording's events, the rule ``_event_lanes``
+	colours lanes by, so a bar here matches its lane on every plot.
 	"""
 	zone = recording.timeline.recording_timezone
 	place, day_phase, band, axis = _strip_scale(recording.timeline)
 
 	lanes, groups = [], []
 	for index, event in enumerate(recording.events):
-		color = qualitative.Pastel[index % len(qualitative.Pastel)]
+		color = EVENT_LOOKS[index % len(EVENT_LOOKS)]
 		bars, rows = [], []
 		for bout in sorted(event.bouts, key=lambda bout: bout.start):
 			onset, offset = bout.start.astimezone(zone), bout.end.astimezone(zone)
@@ -1628,7 +1621,6 @@ clientside_callback(
 	Input("rec-context", "data"),
 	Input("rec-controls", "data"),
 	Input("rec-tab", "data"),
-	Input("plot-theme", "data"),
 	Input({"type": "card-opt", "plot": ALL, "option": ALL}, "value"),
 	Input("rec-hover", "data"),
 	State({"type": "plot-req", "plot": ALL}, "data"),
@@ -1640,14 +1632,31 @@ clientside_callback(
 	Output({"type": "plot", "plot": MATCH}, "figure"),
 	Input({"type": "plot-req", "plot": MATCH}, "data"),
 	State("rec-events", "checked"),
+	State("plot-theme", "data"),
 	# The request mounts as {tab} alone; deh.plotRequest fills it once the tab shows.
 	prevent_initial_call=True,
 )
-def _update_plot(request, events_on):
+def _update_plot(request, events_on, theme):
 	if not request or "context" not in request:
 		raise PreventUpdate
 
-	return _build_plot(ctx.outputs_list["id"]["plot"], request, events_on)
+	return _build_plot(ctx.outputs_list["id"]["plot"], request, events_on, theme)
+
+
+# A theme switch repaints the figures already drawn instead of rebuilding them: the theme is
+# no part of a plot request. A figure drawn in the old theme - on a tab opened later, or
+# built while the switch happened - is caught up as it shows or arrives.
+clientside_callback(
+	ClientsideFunction("deh", "restyleTheme"),
+	Input("plot-theme", "data"),
+	Input("rec-tab", "data"),
+	Input({"type": "plot", "plot": ALL}, "figure"),
+	State({"type": "plot", "plot": ALL}, "id"),
+	State({"type": "plot-req", "plot": ALL}, "data"),
+	State({"type": "plot-req", "plot": ALL}, "id"),
+	State("rec-looks", "data"),
+	prevent_initial_call=True,
+)
 
 
 clientside_callback(
@@ -1664,51 +1673,49 @@ clientside_callback(
 	Input("rec-timeline-zoom", "data"),
 	State({"type": "plot-req", "plot": "recording-timeline"}, "data"),
 	State("rec-events", "checked"),
+	State("plot-theme", "data"),
 	prevent_initial_call=True,
 )
-def _zoom_timeline(x_range, request, events_on):
+def _zoom_timeline(x_range, request, events_on, theme):
 	if not request or "context" not in request:
 		raise PreventUpdate
 
-	return _build_plot("recording-timeline", request, events_on, x_range=x_range)
+	return _build_plot("recording-timeline", request, events_on, theme, x_range=x_range)
 
 
-def _build_plot(name: str, request: dict, events_on: bool, **extra) -> go.Figure:
-	context_data, controls, theme = request["context"], request["controls"], request["theme"]
-	context = services.plot_context(context_data["location"], context_data["recording"])
-	spec = PlotRegistry.spec(name)
-	if any(table not in context for table in spec.requires):
+def _build_plot(name: str, request: dict, events_on: bool, theme: str | None, **extra) -> Figure:
+	context, values = services.plot_options(request)
+	if any(table not in context for table in PlotRegistry.spec(name).requires):
 		raise PreventUpdate
 
-	# A cleared NumberInput sends "", which falls back to the builder's default.
-	values = {key: value for key, value in request["opts"].items() if value != ""}
-	# deh.plotRequest sends only the controls this plot takes.
-	values.update(
-		(option, controls[key]) for option, key in _GLOBAL_OPTIONS.items() if key in controls
-	)
-	# None for the untouched full day, matching every builder's own default: some prepare.*
-	# steps aggregate away the hour column before applying this filter and only skip that
-	# filter when it is exactly None (e.g. prep_polar).
-	if values.get("hours_range") == [0, 23]:
-		values["hours_range"] = None
-
 	figure = PlotRegistry.build(name, context, **values, **extra)
+	layout = figure["layout"]
+	shapes = layout.get("shapes", [])
 	# The card header already carries the title; the figure's own would double it up.
 	# Plotly still reserves top margin for it, so that's trimmed back too - which is also
 	# where the phase band sits, so it keeps a little more room than the title needed.
 	# Rebuilt for the same request - a zoomed timeline - the figure keeps the viewer's
 	# zoom and hidden legend entries; a new request starts afresh.
-	figure.update_layout(
-		title=None, margin={"t": 30}, uirevision=hash(json.dumps(request, sort_keys=True))
-	)
-	# Not a bare template=: a shape carries a literal colour, so the phase band has to be
+	# Event lanes stack above the phase band, so they add their own height on top.
+	lanes = max((shape["y1"] for shape in shapes if shape.get("name") == "event-lane"), default=0)
+	layout.pop("title", None)
+	layout["margin"] = layout.get("margin", {}) | {"t": 30 + lanes}
+	bare = layout.get("meta", {}).pop("dehBareMargin", None)
+	if bare is not None:
+		# Hidden events give their room back, so the plot sizes as one without events.
+		layout["meta"]["dehEventMargins"] = {"on": layout["margin"], "off": bare | {"t": 30}}
+	layout["uirevision"] = hash(json.dumps(request, sort_keys=True))
+	# Not a bare template: a shape carries a literal colour, so the phase band has to be
 	# repainted for the theme rather than inheriting it.
 	plot_theme.apply(figure, theme or "light")
 	if not events_on:
 		# A newly mounted or rebuilt card starts respecting the toggle without being an
 		# Input of its own; deh.toggleEvents keeps an already-loaded figure in sync.
-		figure.update_shapes(visible=False, selector={"name": "event-span"})
-		figure.update_shapes(visible=False, selector={"name": "event-label"})
+		for mark in [*shapes, *layout.get("annotations", [])]:
+			if mark.get("name") in ("event-span", "event-lane", "event-label"):
+				mark["visible"] = False
+		if bare is not None:
+			layout["margin"] = layout["meta"]["dehEventMargins"]["off"]
 	return figure
 
 
@@ -1743,6 +1750,9 @@ clientside_callback(
 	State({"type": "card-title", "plot": ALL}, "children"),
 	State({"type": "card-title", "plot": ALL}, "id"),
 	State("rec-context", "data"),
+	State({"type": "plot-req", "plot": ALL}, "data"),
+	State({"type": "plot-req", "plot": ALL}, "id"),
+	State("rec-timeline-zoom", "data"),
 	prevent_initial_call=True,
 )
 
@@ -1755,7 +1765,7 @@ clientside_callback(
 	Output("rec-format-target", "data"),
 	Output({"type": "rec-fmt", "key": ALL}, "value"),
 	Output({"type": "rec-fmt", "key": ALL}, "placeholder"),
-	Output({"type": "rec-fmt", "key": ALL}, "disabled"),
+	Output({"type": "rec-fmt", "key": ALL}, "style"),
 	Output({"type": "rec-fmt", "key": "palette"}, "data"),
 	Input({"type": "card-format", "plot": ALL}, "n_clicks"),
 	State({"type": "plot", "plot": ALL}, "figure"),

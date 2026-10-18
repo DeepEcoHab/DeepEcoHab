@@ -6,6 +6,7 @@ rendering, the registry's registration-time guards, and core's independence from
 plotting.
 """
 
+import base64
 import datetime as dt
 import json
 import subprocess
@@ -15,22 +16,21 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 import numpy as np
-import plotly.graph_objects as go
 import polars as pl
 import pytest
 import strategies
+from plotly.io.json import to_json_plotly
 
 from deepecohab.plotting import (
 	animals as animals_module,
 	durations,
-	export,
 	plot_factory,
 	prepare,
 	theme,
 )
 from deepecohab.plotting.context import PlotContext
 from deepecohab.plotting.prepare import Heatmap
-from deepecohab.plotting.registry import PlotRegistry
+from deepecohab.plotting.registry import Figure, PlotRegistry
 
 ANIMALS = ["0035A", "0035B", "0035C", "0035D"]
 
@@ -61,6 +61,15 @@ def context() -> PlotContext:
 		phase_range=(1, 6),
 		tunnels_map={"tunnel_1_a": "tunnel_1", "tunnel_1_b": "tunnel_1"},
 	)
+
+
+def decoded(array: dict | list) -> np.ndarray:
+	"""A figure's array as the browser reads it, a base64 typed array decoded."""
+	if not isinstance(array, dict):
+		return np.asarray(array)
+	values = np.frombuffer(base64.b64decode(array["bdata"]), array["dtype"])
+	shape = array.get("shape")
+	return values if shape is None else values.reshape([int(n) for n in str(shape).split(",")])
 
 
 # --- palette -----------------------------------------------------------------
@@ -226,7 +235,7 @@ def test_activity_scope_keeps_undefined_only_at_all(context, scope, expected):
 
 	figure = PlotRegistry.build("activity-bar", scoped, scope=scope)
 
-	assert {x for trace in figure.data for x in trace.x} == expected
+	assert {x for trace in figure["data"] for x in trace["x"]} == expected
 
 
 @pytest.mark.parametrize("plot", ["activity-bar", "time-alone-bar"])
@@ -251,10 +260,10 @@ def test_position_ticks_name_their_own_bars(context, plot, agg):
 		_loaded={**context._loaded, "activity_df": activity_df},
 	)
 
-	axis = PlotRegistry.build(plot, scoped, scope="all", agg=agg).layout.xaxis
+	axis = PlotRegistry.build(plot, scoped, scope="all", agg=agg)["layout"]["xaxis"]
 
-	assert list(axis.ticktext) == plot_factory._tick_labels(
-		[axis.categoryarray[i] for i in axis.tickvals]
+	assert axis["ticktext"] == plot_factory._tick_labels(
+		[axis["categoryarray"][i] for i in axis["tickvals"]]
 	)
 
 
@@ -313,7 +322,8 @@ def test_only_varying_attributes_are_offered(context):
 	available = animals_module.available_attributes(context)
 
 	assert available[0] == "animal_id"
-	assert "sex" in available and "treatment" in available
+	assert "sex" in available
+	assert "treatment" in available
 	assert "genotype" not in available
 
 
@@ -371,26 +381,26 @@ def test_ordering_stays_in_cohort_order(context):
 def test_legend_collapses_to_one_entry_per_group(context):
 	"""Per-animal traces stay, but the legend names each group once."""
 	mapping = animals_module.resolve_colors(context, "sex")
-	figure = go.Figure([go.Scatter(x=[0], y=[0], name=animal) for animal in ANIMALS])
+	figure = Figure(data=[{"type": "scatter", "name": animal} for animal in ANIMALS], layout={})
 
 	animals_module.collapse_legend(figure, mapping)
 
-	assert [trace.name for trace in figure.data] == ["M", "M", "F", "F"]
-	assert [bool(trace.showlegend) for trace in figure.data] == [True, False, True, False]
+	assert [trace["name"] for trace in figure["data"]] == ["M", "M", "F", "F"]
+	assert [trace["showlegend"] for trace in figure["data"]] == [True, False, True, False]
 	# and the categories' colours are declared, for the recording page's palette swap
-	assert list(figure.layout.colorway) == list(mapping.colors.values())
+	assert figure["layout"]["colorway"] == list(mapping.colors.values())
 
 
 def test_labelling_by_subject_renames_without_recolouring(context):
 	"""Label and colour are independent: an animal keeps its colour under either name."""
 	tags = animals_module.resolve_colors(context, "animal_id")
 	names = animals_module.resolve_colors(context, "animal_id", label_by="subject_name")
-	figure = go.Figure([go.Scatter(x=[0], y=[0], name=animal) for animal in ANIMALS])
+	figure = Figure(data=[{"type": "scatter", "name": animal} for animal in ANIMALS], layout={})
 
 	animals_module.collapse_legend(figure, names)
 
 	assert names.by_animal == tags.by_animal
-	assert [trace.name for trace in figure.data] == ["m1", "m2", "m3", "m4"]
+	assert [trace["name"] for trace in figure["data"]] == ["m1", "m2", "m3", "m4"]
 	assert names.legend_title == "<b>Subject name</b>"
 
 
@@ -431,9 +441,9 @@ def test_option_without_a_default_is_rejected(clean_registry):
 	with pytest.raises(TypeError, match="no default"):
 
 		@clean_registry.register("broken", title="Broken", info="", requires=())
-		def broken(context, *, mode) -> go.Figure:
+		def broken(context, *, mode) -> Figure:
 			"""Broken."""
-			return go.Figure()
+			return Figure()
 
 
 def test_default_outside_its_literal_is_rejected(clean_registry):
@@ -441,9 +451,9 @@ def test_default_outside_its_literal_is_rejected(clean_registry):
 	with pytest.raises(ValueError, match="not one of"):
 
 		@clean_registry.register("broken", title="Broken", info="", requires=())
-		def broken(context, *, mode: Literal["a", "b"] = "c") -> go.Figure:
+		def broken(context, *, mode: Literal["a", "b"] = "c") -> Figure:
 			"""Broken."""
-			return go.Figure()
+			return Figure()
 
 
 def test_resolver_for_an_unknown_option_is_rejected(clean_registry):
@@ -457,9 +467,9 @@ def test_resolver_for_an_unknown_option_is_rejected(clean_registry):
 			requires=(),
 			dynamic_choices={"colour_by": lambda c: ["x"]},
 		)
-		def broken(context, *, color_by: str = "animal_id") -> go.Figure:
+		def broken(context, *, color_by: str = "animal_id") -> Figure:
 			"""Broken."""
-			return go.Figure()
+			return Figure()
 
 
 def test_literal_and_resolver_on_one_option_is_rejected(clean_registry):
@@ -473,9 +483,9 @@ def test_literal_and_resolver_on_one_option_is_rejected(clean_registry):
 			requires=(),
 			dynamic_choices={"mode": lambda c: ["x"]},
 		)
-		def broken(context, *, mode: Literal["a", "b"] = "a") -> go.Figure:
+		def broken(context, *, mode: Literal["a", "b"] = "a") -> Figure:
 			"""Broken."""
-			return go.Figure()
+			return Figure()
 
 
 def test_resolved_default_reaches_the_builder(clean_registry, context):
@@ -489,10 +499,10 @@ def test_resolved_default_reaches_the_builder(clean_registry, context):
 		requires=("animals",),
 		dynamic_choices={"color_by": animals_module.available_attributes},
 	)
-	def demo(context, *, color_by: str = "genotype") -> go.Figure:
+	def demo(context, *, color_by: str = "genotype") -> Figure:
 		"""Demo."""
 		seen["color_by"] = color_by
-		return go.Figure()
+		return Figure()
 
 	clean_registry.build("demo", context)
 
@@ -504,9 +514,9 @@ def test_value_outside_its_choices_is_rejected(clean_registry, context):
 	"""The choices a spec advertises are enforced, not merely documented."""
 
 	@clean_registry.register("demo", title="Demo", info="", requires=("animals",))
-	def demo(context, *, agg: Literal["sum", "mean"] = "sum") -> go.Figure:
+	def demo(context, *, agg: Literal["sum", "mean"] = "sum") -> Figure:
 		"""Demo."""
-		return go.Figure()
+		return Figure()
 
 	with pytest.raises(ValueError, match="must be one of"):
 		clean_registry.build("demo", context, agg="median")
@@ -516,9 +526,9 @@ def test_missing_required_table_names_the_plot(clean_registry, context):
 	"""A plot whose step has not run says so, rather than failing deep inside polars."""
 
 	@clean_registry.register("demo", title="Demo", info="", requires=("chasings_df",))
-	def demo(context) -> go.Figure:
+	def demo(context) -> Figure:
 		"""Demo."""
-		return go.Figure()
+		return Figure()
 
 	with pytest.raises(ValueError, match="chasings_df"):
 		clean_registry.build("demo", context)
@@ -620,15 +630,16 @@ def test_line_side_panel_follows_the_legend_and_sits_on_the_zero(context):
 	# Treatment runs vehicle, drug, vehicle, drug, so the legend reads vehicle then drug.
 	mapping = animals_module.resolve_colors(context, "treatment")
 
-	figure = plot_factory.plot_sum_line(
-		frame, mapping, "activity", "hour", context.phases, no_spans
+	figure = plot_factory.plot_count_line(
+		frame, mapping, "activity", "hour", "sum", context.phases, no_spans
 	)
-	side = [trace for trace in figure.data if trace.xaxis == "x2"]
+	side = [trace for trace in figure["data"] if trace.get("xaxis") == "x2"]
+	layout = figure["layout"]
 
-	assert [trace.name for trace in side] == ["0035A", "0035C", "0035B", "0035D"]
-	assert [trace.x[0] for trace in side] == [6, 10, 8, 12]
+	assert [trace["name"] for trace in side] == ["0035A", "0035C", "0035B", "0035D"]
+	assert [trace["x"][0] for trace in side] == [6, 10, 8, 12]
 
-	(line_low, line_high), (bottom, top) = figure.layout.yaxis.range, figure.layout.yaxis2.range
+	(line_low, line_high), (bottom, top) = layout["yaxis"]["range"], layout["yaxis2"]["range"]
 	lowest_edge = len(side) - 1 + plot_factory._SIDE_WIDTH / 2
 	assert (lowest_edge - bottom) / (top - bottom) == pytest.approx(
 		-line_low / (line_high - line_low)
@@ -676,6 +687,9 @@ def bout_cells(cells: list[tuple[str, str | None, int, int]]) -> pl.DataFrame:
 			"hour": pl.UInt8,
 		},
 		orient="row",
+	).with_columns(
+		start=pl.lit(dt.datetime(2023, 5, 24), pl.Datetime(time_zone="Europe/Warsaw")),
+		end=pl.lit(dt.datetime(2023, 5, 25), pl.Datetime(time_zone="Europe/Warsaw")),
 	)
 
 
@@ -687,7 +701,49 @@ def spans(
 	"""Event spans over days 1-2 of the window, sorted for comparison."""
 	with_bouts = replace(context, _loaded={"event_bouts": bouts} if bouts is not None else {})
 
-	return prepare.prep_event_spans(with_bouts, (1, 2), "day", x).sort("event", "x0").rows()
+	return prepare.prep_event_spans(with_bouts, (1, 2), "day", x).sort("event", "x0").select("event", "position", "x0", "x1").rows()
+
+
+def test_a_bout_spans_the_part_of_its_day_it_ran(context):
+	"""On the day axis an hour-long bout spans that hour of its day, not the whole day.
+
+	A bout running past the window is cut at the window's edge.
+	"""
+	origin = dt.datetime(2023, 5, 24, 13, tzinfo=ZoneInfo("Europe/Warsaw"))
+	hours = [
+		("injection", 1, 18, 18, 19),
+		*[("social", day, hour, 46, 52) for day, hour in [(2, 22), (2, 23), (3, 0)]],
+	]
+	bouts = pl.DataFrame(
+		[
+			(
+				event,
+				None,
+				day,
+				hour,
+				origin + dt.timedelta(hours=on),
+				origin + dt.timedelta(hours=off),
+			)
+			for event, day, hour, on, off in hours
+		],
+		schema={
+			"event": pl.Enum(["injection", "social"]),
+			"position": pl.String,
+			"day": pl.UInt16,
+			"hour": pl.UInt8,
+			"start": pl.Datetime("us", "Europe/Warsaw"),
+			"end": pl.Datetime("us", "Europe/Warsaw"),
+		},
+		orient="row",
+	)
+	timed = replace(context, experiment_start=origin)
+
+	(injection, social) = spans(timed, bouts, "day")
+
+	assert injection[:2] == ("injection", None)
+	assert injection[2:] == pytest.approx((0.5 + 18 / 24, 0.5 + 19 / 24))
+	assert social[:2] == ("social", None)
+	assert social[2:] == pytest.approx((0.5 + 46 / 24, 2.5))
 
 
 def test_phase_onsets_are_measured_from_the_start_onset():
@@ -704,12 +760,13 @@ def test_phase_onsets_are_measured_from_the_start_onset():
 
 def test_only_the_phase_switch_gets_a_line():
 	"""The hour axis opens on the start phase, so its onset is the axis edge."""
-	figure = go.Figure()
-	plot_factory._phase_markers(figure, {"light_phase": 13.0, "dark_phase": 0.0})
+	figure = Figure(data=[], layout={})
+	no_hours = pl.Series("hour", [], pl.Int8)
+	plot_factory._phase_markers(figure, {"light_phase": 13.0, "dark_phase": 0.0}, no_hours)
 
-	assert [shape.x0 for shape in figure.layout.shapes] == [13.0]
-	assert [shape.line.width for shape in figure.layout.shapes] == [1.5]
-	assert figure.layout.annotations == ()
+	assert [shape["x0"] for shape in figure["layout"]["shapes"]] == [13.0]
+	assert [shape["line"]["width"] for shape in figure["layout"]["shapes"]] == [1.5]
+	assert "annotations" not in figure["layout"]
 
 
 def test_consecutive_bins_merge_into_one_span(context):
@@ -770,14 +827,15 @@ def test_faceted_heatmap_stacks_one_panel_per_row_in_order():
 
 	figure = plot_factory._faceted_heatmap(heatmap, "T", "X", "Y", ("Hour", "Animal ID"))
 
-	titles = [note.text for note in figure.layout.annotations]
+	layout = figure["layout"]
+	titles = [note["text"] for note in layout["annotations"]]
 	assert titles == ["<b>Cage 1</b>", "<b>Cage 2</b>", "<b>Cage 3</b>"]
-	assert [trace.yaxis for trace in figure.data] == ["y", "y2", "y3"]
-	assert [trace.z.tolist() for trace in figure.data] == [
+	assert [trace["yaxis"] for trace in figure["data"]] == ["y", "y2", "y3"]
+	assert [decoded(trace["z"]).tolist() for trace in figure["data"]] == [
 		values.tolist() for values in heatmap.values
 	]
-	axes = [figure.layout[name] for name in figure.layout if name.startswith(("xaxis", "yaxis"))]
-	assert all(axis.showspikes and axis.spikemode == "across" for axis in axes)
+	axes = [axis for name, axis in layout.items() if name.startswith(("xaxis", "yaxis"))]
+	assert all(axis["showspikes"] and axis["spikemode"] == "across" for axis in axes)
 
 
 def test_faceted_grid_heatmap_lays_panels_out_in_one_row():
@@ -793,8 +851,11 @@ def test_faceted_grid_heatmap_lays_panels_out_in_one_row():
 
 	figure = plot_factory._faceted_heatmap(heatmap, "T", "", "", ("X", "Y"), square=True, grid=True)
 
-	assert [trace.xaxis for trace in figure.data] == ["x", "x2", "x3", "x4"]
-	domains = {figure.layout[trace.yaxis.replace("y", "yaxis")].domain for trace in figure.data}
+	assert [trace["xaxis"] for trace in figure["data"]] == ["x", "x2", "x3", "x4"]
+	domains = {
+		tuple(figure["layout"][trace["yaxis"].replace("y", "yaxis")]["domain"])
+		for trace in figure["data"]
+	}
 	assert len(domains) == 1
 
 
@@ -808,14 +869,14 @@ def test_faceted_heatmap_wraps_past_four_panels_per_line(grid, rows, cols):
 
 	figure = plot_factory._faceted_heatmap(heatmap, "T", "", "", ("X", "Y"), grid=grid)
 
-	def domain(trace: go.Heatmap, axis: str) -> tuple[float, float]:
-		return figure.layout[getattr(trace, f"{axis}axis").replace(axis, f"{axis}axis")].domain
+	def domain(trace: dict, axis: str) -> tuple[float, float]:
+		return tuple(figure["layout"][trace[f"{axis}axis"].replace(axis, f"{axis}axis")]["domain"])
 
-	assert len({domain(trace, "x") for trace in figure.data}) == cols
-	assert len({domain(trace, "y") for trace in figure.data}) == rows
+	assert len({domain(trace, "x") for trace in figure["data"]}) == cols
+	assert len({domain(trace, "y") for trace in figure["data"]}) == rows
 	# Titles stay over their own panel: each sits centred on its trace's x domain.
-	for title, trace in zip(figure.layout.annotations, figure.data, strict=True):
-		assert title.x == pytest.approx(sum(domain(trace, "x")) / 2)
+	for title, trace in zip(figure["layout"]["annotations"], figure["data"], strict=True):
+		assert title["x"] == pytest.approx(sum(domain(trace, "x")) / 2)
 
 
 def test_sum_line_keeps_its_spline_past_a_thousand_points(context):
@@ -828,12 +889,21 @@ def test_sum_line_keeps_its_spline_past_a_thousand_points(context):
 	)
 	mapping = animals_module.resolve_colors(context, "animal_id")
 	no_spans = pl.DataFrame(
-		schema={"event": pl.String, "position": pl.String, "x0": pl.Float64, "x1": pl.Float64}
+		schema={
+			"event": pl.String,
+			"position": pl.String,
+			"x0": pl.Float64,
+			"x1": pl.Float64,
+			"start": pl.Datetime,
+			"end": pl.Datetime,
+		}
 	)
 
-	figure = plot_factory.plot_sum_line(frame, mapping, "activity", "day", context.phases, no_spans)
+	figure = plot_factory.plot_count_line(
+		frame, mapping, "activity", "day", "sum", context.phases, no_spans
+	)
 
-	assert {trace.type for trace in figure.data if trace.xaxis == "x"} == {"scatter"}
+	assert {trace["type"] for trace in figure["data"] if "xaxis" not in trace} == {"scatter"}
 
 
 def test_positioned_event_is_drawn_only_on_its_cages_panel():
@@ -851,19 +921,26 @@ def test_positioned_event_is_drawn_only_on_its_cages_panel():
 			"position": ["cage_1", None],
 			"x0": [12.5, -0.5],
 			"x1": [13.5, 0.5],
+			"start": [dt.datetime(2023, 5, 24)] * 2,
+			"end": [dt.datetime(2023, 5, 25)] * 2,
 		},
 		schema_overrides={"event": pl.Enum(["injection", "social"])},
 	)
 
-	figure = plot_factory.plot_time_spent_per_cage(heatmap, "hourly", bouts)
-	panels = {trace.xaxis: facet for facet, trace in zip(heatmap.facets, figure.data, strict=True)}
+	figure = plot_factory.plot_time_spent_per_cage(heatmap, "hour", bouts)
+	layout = figure["layout"]
+	panels = {
+		trace["xaxis"]: facet for facet, trace in zip(heatmap.facets, figure["data"], strict=True)
+	}
 	drawn = sorted(
-		(shape.label.text, panels[shape.xref])
-		for shape in figure.layout.shapes
-		if shape.name == "event-label"
+		(shape["x0"], panels[shape["xref"]])
+		for shape in layout["shapes"]
+		if shape.get("name") == "event-span"
 	)
+	labels = [note["text"] for note in layout["annotations"] if note.get("name") == "event-label"]
 
-	assert drawn == [("injection", "cage_1"), ("injection", "cage_2"), ("social", "cage_1")]
+	assert drawn == [(-0.5, "cage_1"), (-0.5, "cage_2"), (12.5, "cage_1")]
+	assert labels == ["injection", "social"]
 
 
 def test_one_events_cages_share_a_span_on_a_plot_without_panels(context):
@@ -875,6 +952,8 @@ def test_one_events_cages_share_a_span_on_a_plot_without_panels(context):
 			"position": ["cage_3", "cage_1"],
 			"x0": [0.5, 0.5],
 			"x1": [1.5, 1.5],
+			"start": [dt.datetime(2023, 5, 24)] * 2,
+			"end": [dt.datetime(2023, 5, 25)] * 2,
 		},
 		schema_overrides={"event": pl.Enum(["injection", "social"])},
 	)
@@ -882,8 +961,38 @@ def test_one_events_cages_share_a_span_on_a_plot_without_panels(context):
 
 	figure = plot_factory.plot_ranking_stability(ranks, mapping, "day", bouts)
 
-	labels = [shape.label.text for shape in figure.layout.shapes if shape.name == "event-label"]
-	assert labels == ["social (cage_1, cage_3)"]
+	layout = figure["layout"]
+	spans = [shape for shape in layout["shapes"] if shape.get("name") == "event-span"]
+	(label,) = [note for note in layout["annotations"] if note.get("name") == "event-label"]
+	assert len(spans) == 1
+	assert (label["text"], label["hovertext"]) == ("social", "social<br>Cage 1<br>Cage 3")
+
+
+def test_an_events_overlapping_bouts_fuse_into_one_lane_bar():
+	"""Overlapping or touching bouts are one bar; a gap starts another; each event, a lane."""
+	spans = pl.DataFrame(
+		{
+			"event": ["social", "social", "social", "injection"],
+			"position": ["cage_1", "cage_2", None, None],
+			"x0": [0.5, 1.5, 5.5, 0.5],
+			"x1": [2.5, 3.5, 6.5, 1.5],
+			"start": [dt.datetime(2023, 5, 24)] * 4,
+			"end": [dt.datetime(2023, 5, 25)] * 4,
+		},
+		schema_overrides={"event": pl.Enum(["injection", "social"])},
+	)
+	figure = Figure(data=[], layout={})
+
+	plot_factory._event_spans(figure, spans)
+
+	lanes = sorted(
+		(shape["y0"], shape["x0"], shape["x1"])
+		for shape in figure["layout"]["shapes"]
+		if shape.get("name") == "event-lane"
+	)
+	injection, social = sorted({y0 for y0, _, _ in lanes})
+	assert [(x0, x1) for y0, x0, x1 in lanes if y0 == injection] == [(0.5, 1.5)]
+	assert [(x0, x1) for y0, x0, x1 in lanes if y0 == social] == [(0.5, 3.5), (5.5, 6.5)]
 
 
 def test_datetime_spans_are_written_like_the_trace_they_mark(context):
@@ -893,27 +1002,31 @@ def test_datetime_spans_are_written_like_the_trace_they_mark(context):
 	"""
 	moment = dt.datetime(2023, 5, 24, 13, 0, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
 	ranking = pl.DataFrame(
-		{"animal_id": [ANIMALS[0]], "datetime": [moment], "ordinal": [1.0]},
+		{"animal_id": [ANIMALS[0]], "datetime": [moment], "ordinal": [1.0], "day": 1, "hour": 13},
 		schema={
 			"animal_id": pl.String,
 			"datetime": pl.Datetime("us", "Europe/Warsaw"),
 			"ordinal": pl.Float64,
+			"day": pl.Int16,
+			"hour": pl.Int8,
 		},
 	)
 	bouts = bout_cells([("injection", None, 1, 13)]).with_columns(
 		start=pl.lit(moment), end=pl.lit(moment + dt.timedelta(minutes=10))
 	)
-	with_bouts = replace(context, _loaded={"event_bouts": bouts} if bouts is not None else {})
+	loaded = {"ranking": ranking} | ({"event_bouts": bouts} if bouts is not None else {})
+	with_bouts = replace(context, _loaded=loaded)
 	mapping = animals_module.resolve_colors(context, "animal_id")
 
 	figure = plot_factory.plot_ranking_line(
-		ranking, mapping, prepare.prep_event_spans(with_bouts, (1, 2), "day", "datetime")
+		prepare.prep_ranking_over_time(with_bouts, (1, 2), "day"),
+		mapping,
+		prepare.prep_event_spans(with_bouts, (1, 2), "day", "datetime"),
 	)
-	payload = json.loads(figure.to_json())
-	(csv,) = export.figure_data_csv(payload)
+	payload = json.loads(to_json_plotly(figure))
 
 	assert dt.datetime.fromisoformat(payload["layout"]["shapes"][0]["x0"]) == (
-		dt.datetime.fromisoformat(pl.read_csv(csv.encode())["x"][0])
+		dt.datetime.fromisoformat(payload["data"][0]["x"][0])
 	)
 
 
@@ -932,7 +1045,7 @@ def test_timeline_buckets_take_their_dominant_position_until_zoomed_in(context):
 		},
 		schema_overrides={"datetime": pl.Datetime("us", zone)},
 	)
-	context = replace(context, _loaded={"main_df": main_df})
+	context = replace(context, _loaded={"padded_df": main_df})
 
 	def wall(seconds: float) -> dt.datetime:
 		return dt.datetime(2023, 5, 24, 12) + dt.timedelta(seconds=seconds)
@@ -967,7 +1080,7 @@ def test_timeline_bars_stop_where_the_visits_do_not_at_bucket_edges(context):
 		},
 		schema_overrides={"datetime": pl.Datetime("us", zone)},
 	)
-	context = replace(context, _loaded={"main_df": main_df})
+	context = replace(context, _loaded={"padded_df": main_df})
 
 	def wall(seconds: float) -> dt.datetime:
 		return dt.datetime(2023, 5, 24, 12) + dt.timedelta(seconds=seconds)
@@ -975,6 +1088,50 @@ def test_timeline_bars_stop_where_the_visits_do_not_at_bucket_edges(context):
 	assert prepare.prep_timeline(context, (1, 1), "day").rows() == [
 		("0035A", "cage_1", wall(0.5), wall(1000.5)),
 		("0035A", "cage_2", wall(1200), wall(2000.25)),
+	]
+
+
+def test_timeline_extent_keeps_a_leading_undefined_stretch(context):
+	"""A recording gap at the window's start draws no bar, but the axis still opens there."""
+	zone = "Europe/Warsaw"
+	noon = dt.datetime(2023, 5, 24, 12, tzinfo=ZoneInfo(zone))
+	padded_df = pl.DataFrame(
+		{
+			"animal_id": ["0035A"] * 2,
+			"position": ["undefined", "cage_1"],
+			"datetime": [noon + dt.timedelta(hours=h) for h in (3, 4)],
+			"time_spent": [dt.timedelta(hours=3), dt.timedelta(hours=1)],
+			"day": [1] * 2,
+		},
+		schema_overrides={"datetime": pl.Datetime("us", zone)},
+	)
+	context = replace(context, _loaded={"padded_df": padded_df})
+
+	assert prepare.prep_timeline_extent(context, (1, 1), "day") == (
+		"2023-05-24 12:00:00.000000",
+		"2023-05-24 16:00:00.000000",
+	)
+
+
+def test_timeline_draws_a_visit_that_began_before_the_window(context):
+	"""A stay read on day 1 and again on day 3 still fills day 2, which holds neither read."""
+	zone = "Europe/Warsaw"
+	noon = dt.datetime(2023, 5, 24, 12, tzinfo=ZoneInfo(zone))
+	pieces = [noon + dt.timedelta(days=1, minutes=m) for m in range(2)]
+	padded_df = pl.DataFrame(
+		{
+			"animal_id": ["0035A"] * 2,
+			"position": ["cage_1"] * 2,
+			"datetime": [piece + dt.timedelta(minutes=1) for piece in pieces],
+			"time_spent": [dt.timedelta(minutes=1)] * 2,
+			"day": [2] * 2,
+		},
+		schema_overrides={"datetime": pl.Datetime("us", zone)},
+	)
+	context = replace(context, _loaded={"padded_df": padded_df})
+
+	assert prepare.prep_timeline(context, (2, 2), "day").rows() == [
+		("0035A", "cage_1", dt.datetime(2023, 5, 25, 12), dt.datetime(2023, 5, 25, 12, 2)),
 	]
 
 
@@ -993,7 +1150,7 @@ def test_timeline_leaves_an_undefined_gap_empty_between_bars_at_one_position(con
 		},
 		schema_overrides={"datetime": pl.Datetime("us", zone)},
 	)
-	context = replace(context, _loaded={"main_df": main_df})
+	context = replace(context, _loaded={"padded_df": main_df})
 
 	def wall(seconds: float) -> dt.datetime:
 		return dt.datetime(2023, 5, 24, 12) + dt.timedelta(seconds=seconds)
@@ -1006,7 +1163,7 @@ def test_timeline_leaves_an_undefined_gap_empty_between_bars_at_one_position(con
 
 def test_timeline_ships_wall_clock_strings_and_reads_back_as_dates():
 	"""The timeline's x is wall-clock strings - plotly reads epoch numbers in the browser's
-	zone - and its y a typed array, but its CSV still names dates and animals."""
+	zone - and its y a typed array."""
 	zone = "Europe/Warsaw"
 
 	def at(hour: int) -> dt.datetime:
@@ -1023,8 +1180,15 @@ def test_timeline_ships_wall_clock_strings_and_reads_back_as_dates():
 	)
 	no_spans = pl.DataFrame(schema={"event": pl.String, "position": pl.String})
 
-	figure = plot_factory.plot_timeline(visits, ANIMALS[:2], ["cage_1", "tunnel_1"], no_spans)
-	payload = json.loads(figure.to_json())
+	figure = plot_factory.plot_timeline(
+		prepare.prep_timeline_vertices(visits),
+		ANIMALS[:2],
+		ANIMALS[:2],
+		["cage_1", "tunnel_1"],
+		no_spans,
+		("2023-05-24 01:00:00", "2023-05-24 05:00:00"),
+	)
+	payload = json.loads(to_json_plotly(figure))
 
 	assert [(t["name"], t["meta"], t["showlegend"]) for t in payload["data"]] == [
 		("cage_1", "0035A", True),
@@ -1032,25 +1196,20 @@ def test_timeline_ships_wall_clock_strings_and_reads_back_as_dates():
 		("tunnel_1", "0035A", True),
 		("tunnel_1", "0035B", False),
 	]
-	assert payload["data"][0]["x"] == [
-		"2023-05-24 02:00:00.000000",
-		"2023-05-24 03:00:00.000000",
+	x = payload["data"][0]["x"]
+	# Start, two interior hover vertices, end, and the None that breaks the line.
+	assert len(x) == 3 + 2
+	# A zero fraction is left off, which is most of the payload's bytes saved.
+	assert (x[0], x[1], x[3], x[4]) == (
+		"2023-05-24 02:00:00",
+		"2023-05-24 02:20:00",
+		"2023-05-24 03:00:00",
 		None,
-	]
+	)
 	# Plotly hides a zero-length trace, legend entry and all.
 	assert all(trace["x"] for trace in payload["data"])
 	assert all("bdata" in trace["y"] for trace in payload["data"])
 	assert payload["layout"]["xaxis"]["type"] == "date"
-
-	(csv,) = export.figure_data_csv(payload)
-	assert pl.read_csv(csv.encode()).rows() == [
-		("cage_1", "2023-05-24 02:00:00.000000", "0035A"),
-		("cage_1", "2023-05-24 03:00:00.000000", "0035A"),
-		("cage_1", "2023-05-24 01:00:00.000000", "0035B"),
-		("cage_1", "2023-05-24 02:00:00.000000", "0035B"),
-		("tunnel_1", "2023-05-24 04:00:00.000000", "0035A"),
-		("tunnel_1", "2023-05-24 05:00:00.000000", "0035A"),
-	]
 
 
 # --- quality -------------------------------------------------------------------
@@ -1091,7 +1250,28 @@ def test_heatmap_rows_follow_the_label(context):
 
 	figure = PlotRegistry.build("quality-heatmap", with_quality, label_by="subject_name")
 
-	assert list(figure.data[0].y) == ["m1", "m2", "m3", "m4"]
+	assert figure["data"][0]["y"] == ["m1", "m2", "m3", "m4"]
+
+
+def test_a_heatmaps_data_is_one_row_per_cell_under_its_labels(context):
+	quality = pl.DataFrame(
+		{
+			"animal_id": [*ANIMALS, ANIMALS[0]],
+			"antenna": [1, 1, 1, 1, 2],
+			"correct": [10] * 5,
+			"interpolated": [0] * 5,
+			"bad": [1, 0, 0, 0, 0],
+			"miss_rate": [9.1, 0.0, 0.0, 0.0, 0.0],
+		}
+	)
+	with_quality = replace(context, _loaded={**context._loaded, "recording_quality": quality})
+
+	(data,) = PlotRegistry.data("quality-heatmap", with_quality, label_by="subject_name").values()
+
+	assert data.columns == ["animal", "antenna", "missed_%"]
+	assert data.height == 4 * 2
+	assert data.filter(antenna="1")["animal"].to_list() == ["m1", "m2", "m3", "m4"]
+	assert data.filter(animal="m1", antenna="1")["missed_%"].item() == 9.1
 
 
 def test_quality_by_antenna_pools_counts_rather_than_averaging_rates():
@@ -1144,10 +1324,11 @@ def test_reads_per_antenna_stacks_every_kind_to_100_percent(context):
 
 	figure = theme.apply(PlotRegistry.build("quality-antenna", with_quality), "dark")
 
-	assert figure.layout.barmode == "stack"
-	assert [bar.name for bar in figure.data] == ["Correct", "Interpolated", "Bad"]
-	assert sum(bar.y[0] for bar in figure.data) == pytest.approx(100.0)
-	assert [bar.marker.color for bar in figure.data] == list(theme.READ_LOOKS.values())
+	bars = figure["data"]
+	assert figure["layout"]["barmode"] == "stack"
+	assert [bar["name"] for bar in bars] == ["Correct", "Interpolated", "Bad"]
+	assert sum(decoded(bar["y"])[0] for bar in bars) == pytest.approx(100.0)
+	assert [bar["marker"]["color"] for bar in bars] == list(theme.READ_LOOKS.values())
 
 
 def test_ranking_distribution_is_the_same_for_a_window_in_days_or_phases(context):
@@ -1200,27 +1381,26 @@ def test_ranking_over_time_keeps_only_rating_changes_and_each_animals_last(conte
 # --- network graphs ----------------------------------------------------------
 
 
-def test_dominance_node_size_is_the_animals_own_ordinal():
+def test_dominance_node_size_is_the_animals_own_ordinal(context):
 	"""Sizes are looked up by animal id; the ranking table is in no particular order."""
-	connections = pl.DataFrame({"source": ["a", "b"], "target": ["b", "c"], "chasings": [3.0, 1.0]})
-	nodes = pl.DataFrame({"animal_id": ["c", "a", "b"], "ordinal": [10.0, 30.0, 20.0]})
-
-	figure = plot_factory.plot_network_graph(
-		connections, nodes, ["a", "b", "c"], ["#111", "#222", "#333"], "chasings", "circular"
+	animal = pl.Enum(ANIMALS)
+	chasings = pl.DataFrame(
+		{
+			"chaser": pl.Series(ANIMALS[:2], dtype=animal),
+			"chased": pl.Series(ANIMALS[1:3], dtype=animal),
+			"chasings": [3, 1],
+			"day": [1, 1],
+		}
 	)
-
-	assert figure.data[-1].marker.size == (30.0, 20.0, 10.0)
-
-
-def test_sociability_nodes_are_uniform_without_a_ranking():
-	"""An undirected graph carries no ranking, so every node takes the same size."""
-	connections = pl.DataFrame({"source": ["a"], "target": ["b"], "proportion_together": [0.5]})
-
-	figure = plot_factory.plot_network_graph(
-		connections, None, ["a", "b"], ["#111", "#222"], "proportion_together", "circular"
+	ranking = pl.DataFrame(
+		{"animal_id": ANIMALS[::-1], "ordinal": [10.0, 20.0, 30.0, 40.0], "day": [1] * 4}
 	)
+	context = replace(context, _loaded={"chasings_df": chasings, "ranking": ranking})
 
-	assert figure.data[-1].marker.size == (30, 30)
+	nodes, edges = prepare.prep_network_dominance(context, (1, 1), "day", "circular", 0)
+
+	assert nodes["size"].to_list() == [40.0, 30.0, 20.0, 10.0]
+	assert edges.filter(pl.col("source") == pl.col("target")).is_empty()
 
 
 def test_edge_cutoff_refits_the_layout_without_the_weak_edges():
@@ -1228,23 +1408,18 @@ def test_edge_cutoff_refits_the_layout_without_the_weak_edges():
 	connections = pl.DataFrame(
 		{"source": ["a", "b", "a"], "target": ["b", "c", "c"], "chasings": [10.0, 9.0, 1.0]}
 	)
-	nodes = pl.DataFrame({"animal_id": ["a", "b", "c"], "ordinal": [30.0, 20.0, 10.0]})
+	sizes = {"a": 30.0, "b": 20.0, "c": 10.0}
 
-	def build(edge_cutoff):
-		return plot_factory.plot_network_graph(
-			connections,
-			nodes,
-			["a", "b", "c"],
-			["#111", "#222", "#333"],
-			"chasings",
-			"spring",
-			edge_cutoff,
-		)
+	full_nodes, full_edges = prepare._network_layout(
+		connections, "chasings", True, sizes, "spring", 0
+	)
+	cut_nodes, cut_edges = prepare._network_layout(
+		connections, "chasings", True, sizes, "spring", 50
+	)
 
-	full, cut = build(0), build(50)
-
-	assert len(full.data) == 4 and len(cut.data) == 3
-	assert full.data[-1].x != cut.data[-1].x
+	assert full_edges.height == 3
+	assert cut_edges.height == 2
+	assert full_nodes["x"].to_list() != cut_nodes["x"].to_list()
 
 
 # --- module boundaries -------------------------------------------------------

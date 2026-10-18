@@ -12,17 +12,18 @@ from deepecohab.plotting.export import (
 	export_figure as export_figure,
 	fit_for_export as fit_for_export,
 )
-from deepecohab.plotting.registry import PlotRegistry as PlotRegistry
+from deepecohab.plotting.registry import Figure as Figure, PlotRegistry as PlotRegistry
 
 if TYPE_CHECKING:
 	from deepecohab.core.data_model import Recording
 
 
-def plot(name: str, target: "Recording | PlotContext", **options: Any) -> go.Figure:
-	"""Build one plot from a recording or a context.
+def plot(name: str, target: "Recording | PlotContext", **options: Any) -> Figure:
+	"""Build one plot from a recording or a context, as the dict plotly.js draws.
 
 	Hold a :class:`PlotContext` when making several plots: it caches the analysis
-	tables it has already read, which a recording passed here cannot do.
+	tables it has already read, which a recording passed here cannot do. Pass the
+	result to :func:`to_figure` to show it or save it with plotly.
 
 	Args:
 		name: registry key, as listed by :meth:`PlotRegistry.list_available`.
@@ -30,3 +31,8 @@ def plot(name: str, target: "Recording | PlotContext", **options: Any) -> go.Fig
 	"""
 	context = target if isinstance(target, PlotContext) else PlotContext.from_recording(target)
 	return PlotRegistry.build(name, context, **options)
+
+
+def to_figure(figure: Figure) -> go.Figure:
+	"""``figure`` as a ``go.Figure``, for ``show``, ``write_image`` and the rest of plotly."""
+	return go.Figure(figure)

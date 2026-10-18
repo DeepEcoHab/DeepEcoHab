@@ -271,7 +271,8 @@ def test_no_qualifying_events_returns_empty(monkeypatch):
 	]
 	result = run_matches(monkeypatch, strategies.main_df_frame(rows, RECORDING))
 	assert result.height == 0
-	assert "winner" in result.columns and "loser" in result.columns
+	assert "winner" in result.columns
+	assert "loser" in result.columns
 
 
 def at_offset(seconds: float) -> dt.datetime:

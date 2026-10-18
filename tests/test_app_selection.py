@@ -129,6 +129,7 @@ def test_selection_callbacks(tmp_path):
 	harness.write_text(_HARNESS, encoding="utf-8")
 	result = subprocess.run(
 		["node", str(harness), str(CLIENTSIDE_JS)],
+		check=False,
 		capture_output=True,
 		text=True,
 		encoding="utf-8",

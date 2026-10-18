@@ -54,7 +54,8 @@ def test_diamond_is_valid_topological_order(graph):
 	deps = {"root": [], "left": ["root"], "right": ["root"], "join": ["left", "right"]}
 	order = graph(deps).step_order()
 	assert _is_topo(order, deps)
-	assert order[0] == "root" and order[-1] == "join"
+	assert order[0] == "root"
+	assert order[-1] == "join"
 
 
 def test_order_is_deterministic(graph):

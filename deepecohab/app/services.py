@@ -7,6 +7,7 @@ from collections.abc import Callable
 from functools import cache, lru_cache
 from importlib.metadata import version
 from pathlib import Path
+from typing import Any
 
 import diskcache
 import polars as pl
@@ -208,6 +209,36 @@ def _plot_context(location: str, name: str, _stamp: tuple[tuple[str, int], ...])
 	return PlotContext.from_recording(load_project(location)[name])
 
 
+#: Driven by the control bar rather than a per-card control: builder option -> rec-controls key.
+GLOBAL_OPTIONS = {
+	"days_range": "window",
+	"granularity": "granularity",
+	"phase_type": "phases",
+	"color_by": "color_by",
+	"label_by": "label_by",
+	"hours_range": "hours",
+	"group_mean": "group_mean",
+}
+
+
+def plot_options(request: dict) -> tuple[PlotContext, dict[str, Any]]:
+	"""The context and builder options a recording card's plot request names."""
+	context_data, controls = request["context"], request["controls"]
+	context = plot_context(context_data["location"], context_data["recording"])
+	# A cleared NumberInput sends "", which falls back to the builder's default.
+	values = {key: value for key, value in request["opts"].items() if value != ""}
+	# deh.plotRequest sends only the controls this plot takes.
+	values.update(
+		(option, controls[key]) for option, key in GLOBAL_OPTIONS.items() if key in controls
+	)
+	# None for the untouched full day, matching every builder's own default: some prepare.*
+	# steps aggregate away the hour column before applying this filter and only skip that
+	# filter when it is exactly None (e.g. prep_polar).
+	if values.get("hours_range") == [0, 23]:
+		values["hours_range"] = None
+	return context, values
+
+
 def recording_summary(location: str, name: str) -> dict:
 	"""Everything the recording dashboard header and control bar show."""
 	recording = load_project(location)[name]
@@ -237,9 +268,7 @@ def recording_summary(location: str, name: str) -> dict:
 
 def update_notes(location: str, name: str, notes: str, tag: str | None = None) -> None:
 	"""Persist new notes for one recording or animal; the next `load_project` picks them up."""
-	project = load_project(location)
-	project[name].update_notes(notes, tag)
-	project.log.info("%s: notes updated%s", name, f" for animal {tag}" if tag else "")
+	load_project(location).update_notes(name, notes, tag)
 
 
 def quality_summary(context: PlotContext) -> dict:
@@ -474,10 +503,8 @@ def run_analysis(
 	params = {**(params or {}), "use_prev_ranking": use_prev_ranking or not overwrite}
 
 	order = DataFrameRegistry.step_order()
-	todo: dict[str, list[str]] = {}
-	for location, name in selection:
-		if overwrite or not _analysed(location, name):
-			todo.setdefault(location, []).append(name)
+	progress = pending_progress(selection, overwrite)
+	todo = {location: list(recordings) for location, recordings in progress.items()}
 
 	if not todo:
 		message = (
@@ -490,7 +517,7 @@ def run_analysis(
 	started = time.perf_counter()
 	cancel = threading.Event()
 	errors = _analyse_projects(
-		todo, AnalysisParams(**params), overwrite, order, set_progress, cancel
+		progress, AnalysisParams(**params), overwrite, order, set_progress, cancel
 	)
 
 	failed = dict(failed or {})
@@ -519,8 +546,21 @@ def run_analysis(
 	return failed, []
 
 
+def pending_progress(selection: list[list[str]], overwrite: bool) -> dict:
+	"""The progress a run starts from: each selected recording it will build, at step 0.
+
+	The click paints it straight away; the background run only reports once its worker is up.
+	"""
+	order = DataFrameRegistry.step_order()
+	progress: dict[str, dict[str, list]] = {}
+	for location, name in selection:
+		if overwrite or not _analysed(location, name):
+			progress.setdefault(location, {})[name] = [0, len(order), order[0]]
+	return progress
+
+
 def _analyse_projects(
-	todo: dict[str, list[str]],
+	progress: dict,
 	params: AnalysisParams,
 	overwrite: bool,
 	order: list[str],
@@ -529,13 +569,11 @@ def _analyse_projects(
 ) -> dict[str, Exception]:
 	"""Analyse each project in turn, reporting progress and collecting the ones that raised.
 
-	A watcher thread turns :func:`request_cancel` into ``cancel``, so the steps in flight
-	still land. ``cancel`` is the caller's, so it can tell a cancelled run from a clean one.
+	``progress`` is :func:`pending_progress`, updated in place as steps land. A watcher
+	thread turns :func:`request_cancel` into ``cancel``, so the steps in flight still land.
+	``cancel`` is the caller's, so it can tell a cancelled run from a clean one.
 	"""
-	progress = {
-		location: {name: [0, len(order), order[0]] for name in names}
-		for location, names in todo.items()
-	}
+	todo = {location: list(recordings) for location, recordings in progress.items()}
 	errors: dict[str, Exception] = {}
 	finished = threading.Event()
 
@@ -551,29 +589,23 @@ def _analyse_projects(
 				if any(flags.get(key) for key in keys):
 					cancel.set()
 
+		def analyse(location: str, names: list[str]) -> None:
+			with Project.load(Path(location)) as project:
+				for event in project.iter_analysis(
+					params, names, overwrite=overwrite, cancel=cancel
+				):
+					building = order[event.step_index] if event.step_index < len(order) else ""
+					progress[location][event.recording] = [event.step_index, len(order), building]
+					set_progress(progress)
+
 		threading.Thread(target=watch, daemon=True).start()
 		try:
 			for location, names in todo.items():
 				if cancel.is_set():
 					break
 				try:
-					with Project.load(Path(location)) as project:
-						for event in project.iter_analysis(
-							params, names, overwrite=overwrite, cancel=cancel
-						):
-							project.log.info("%s: built %s", event.recording, event.step)
-							building = (
-								order[event.step_index] if event.step_index < len(order) else ""
-							)
-							progress[location][event.recording] = [
-								event.step_index,
-								len(order),
-								building,
-							]
-							set_progress(progress)
-						if cancel.is_set():
-							project.log.warning("cancelled; steps in flight finished")
-				except Exception as exc:  # the project's other recordings still finished
+					analyse(location, names)
+				except Exception as exc:  # shown to the user; the other projects still run
 					errors[location] = exc
 		finally:
 			finished.set()

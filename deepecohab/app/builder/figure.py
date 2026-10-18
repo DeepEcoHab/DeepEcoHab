@@ -171,10 +171,32 @@ class PlotType:
 		return (*(c for c in CHANNELS if c in accepted and c != skipped), *pointed, DETAIL)
 
 
+#: Per plot type, the one plotly argument the toolbar lets the user pick and its choices as
+#: value to button label. The first choice is the default, which is also what a state with
+#: no entry for the argument draws.
+OPTIONS: dict[str, tuple[str, dict[str, str]]] = {
+	"bar": (
+		"barmode",
+		{"group": "Grouped", "stack": "Stacked", "relative": "Relative", "overlay": "Overlaid"},
+	),
+	"box": ("boxmode", {"group": "Grouped", "overlay": "Overlaid"}),
+	"line": (
+		"line_shape",
+		{
+			"linear": "Straight",
+			"spline": "Smooth",
+			"hv": "Step hv",
+			"vh": "Step vh",
+			"hvh": "Step hvh",
+		},
+	),
+}
+OPTIONS["area"] = OPTIONS["line"]
+
 PLOTS: tuple[PlotType, ...] = (
 	PlotType("line", "Line", px.line, ("x", "y")),
 	PlotType("scatter", "Scatter", px.scatter, ("x", "y")),
-	PlotType("bar", "Bar", px.bar, ("x", "y"), {"barmode": "group"}),
+	PlotType("bar", "Bar", px.bar, ("x", "y")),
 	PlotType("area", "Area", px.area, ("x", "y")),
 	PlotType("box", "Box", px.box, ("y",), {"points": "all"}),
 	PlotType("violin", "Violin", px.violin, ("y",), {"box": False, "points": "all"}),
@@ -678,6 +700,35 @@ def placeholder(message: str) -> go.Figure:
 	return figure
 
 
+def _excludes_outliers(state: dict[str, Any]) -> bool:
+	return state["kind"] in POINTED and state.get("outliers") == "exclude"
+
+
+def plotted_data(
+	frame: pl.LazyFrame, state: dict[str, Any], catalog: Sequence[Field]
+) -> pl.DataFrame | None:
+	"""The rows :func:`build_figure` draws, as the plot's CSV export holds them.
+
+	Columns are titled as the axes are. Excluded outliers stay in, flagged in an
+	``excluded_outlier`` column, so the export shows what the plot's note counts.
+
+	Returns:
+		The rows, or ``None`` when the plot cannot be drawn or no row matches.
+	"""
+	if any(note.blocking for note in warnings_for(frame, state, catalog)):
+		return None
+
+	data = build_frame(frame, state, catalog)
+	if data.is_empty():
+		return None
+
+	if _excludes_outliers(state):
+		data = data.with_columns(outliers(state, catalog).alias("excluded_outlier"))
+	mode = state.get("measure_as", DEFAULT_MODE)
+	labels = {item.name: label_for(item, mode) for item in catalog}
+	return data.rename({name: labels[name] for name in data.columns if name in labels})
+
+
 def build_figure(
 	frame: pl.LazyFrame,
 	state: dict[str, Any],
@@ -699,9 +750,9 @@ def build_figure(
 	if data.is_empty():
 		return placeholder("No rows match the current filters."), [note.text for note in notes]
 
-	if plot.name in POINTED and state.get("outliers") == "exclude":
+	if _excludes_outliers(state):
 		total = data.height
-		data = drop_outliers(data, state, catalog)
+		data = data.remove(outliers(state, catalog))
 		if dropped := total - data.height:
 			notes.append(
 				Note(
@@ -718,6 +769,10 @@ def build_figure(
 		if channel not in (DETAIL, POINT_COLOR)
 	}
 	numeric = {item.name for item in measures(state, catalog)}
+	if plot.name in OPTIONS:
+		argument, choices = OPTIONS[plot.name]
+		chosen = state.get(argument)
+		kwargs[argument] = chosen if chosen in choices else next(iter(choices))
 	if HOVER in kwargs:
 		kwargs[HOVER] = {name: ":.4~r" if name in numeric else True for name in kwargs[HOVER]}
 
@@ -750,10 +805,27 @@ def build_figure(
 	if boxes and colorway:
 		kwargs["color_discrete_sequence"] = colorway[:boxes]
 
+	# One heatmap cell per value: a whole-number axis stays numeric, so Format's bounds are
+	# values, with bins one wide; anything else becomes categories, in sorted order taken
+	# before the cast, or text would sort 10 before 2.
+	unit_bins: dict[str, dict[str, float]] = {}
 	if plot.name == "heatmap":
-		# As categories, plotly cannot bin neighbouring hours or days into one cell. They
-		# keep build_frame's sorted order, which only slips for a value its first group lacks.
-		data = data.with_columns(pl.col(*{kwargs["x"], kwargs["y"]}).cast(pl.String))
+		texts = []
+		for axis in ("x", "y"):
+			column = data[kwargs[axis]].drop_nulls()
+			if column.dtype.is_integer() and not column.is_empty():
+				unit_bins[f"{axis}bins"] = {
+					"start": column.min() - 0.5,
+					"end": column.max() + 0.5,
+					"size": 1,
+				}
+			else:
+				texts.append(kwargs[axis])
+		kwargs["category_orders"] = {
+			name: data[name].drop_nulls().unique().sort().cast(pl.String).to_list()
+			for name in texts
+		}
+		data = data.with_columns(pl.col(*texts).cast(pl.String)) if texts else data
 
 	try:
 		figure = plot.builder(data, **kwargs, **plot.extra, labels=labels, template=TEMPLATE)
@@ -767,6 +839,14 @@ def build_figure(
 		colorway=colorway,
 	)
 	figure.for_each_annotation(lambda note: note.update(text=note.text.split("=")[-1]))
+	if unit_bins:
+		figure.update_traces(**unit_bins)
+	# Plotly types an axis from its first trace's values, and a trace of all-null categories
+	# (an event a group's recordings never had) reads as numeric, hiding every other trace.
+	for axis, update in (("x", figure.update_xaxes), ("y", figure.update_yaxes)):
+		dtype = data.schema.get(kwargs.get(axis)) if isinstance(kwargs.get(axis), str) else None
+		if dtype is not None and not (dtype.is_numeric() or dtype.is_temporal()):
+			update(type="category")
 
 	if point_item is not None:
 		colors = dict(zip(point_values, (colorway or [])[boxes:], strict=True)) or None
@@ -775,10 +855,8 @@ def build_figure(
 	return figure, [note.text for note in notes]
 
 
-def drop_outliers(
-	data: pl.DataFrame, state: dict[str, Any], catalog: Sequence[Field]
-) -> pl.DataFrame:
-	"""Drop the rows whose measure sits past the :data:`FENCE` of its own box or violin.
+def outliers(state: dict[str, Any], catalog: Sequence[Field]) -> pl.Expr:
+	"""Whether a row's measure sits past the :data:`FENCE` of its own box or violin.
 
 	Each box is one combination of the categories on the shelves that split boxes, so
 	Detail, Hover and Point colour, which only say what a point is, are left out. The
@@ -795,7 +873,7 @@ def drop_outliers(
 		None,
 	)
 	if value is None:
-		return data
+		return pl.lit(False)
 
 	keys = [
 		item.name
@@ -810,7 +888,7 @@ def drop_outliers(
 	fence = FENCE * (q3 - q1)
 	outside = ~column.is_between(q1 - fence, q3 + fence)
 
-	return data.remove(outside.over(list(dict.fromkeys(keys))) if keys else outside)
+	return outside.over(list(dict.fromkeys(keys))) if keys else outside
 
 
 def color_points(

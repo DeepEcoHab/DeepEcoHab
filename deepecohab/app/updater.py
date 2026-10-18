@@ -1,13 +1,3 @@
-"""Upgrade DeepEcoHab and start it again.
-
-Windows cannot replace a file a running process has loaded, so there the app hands the
-upgrade to a helper and exits: :func:`spawn_helper` runs this file as a script, which
-waits for the app to exit, upgrades and starts the app again in its own console. That
-is why this module is stdlib only and the helper runs on the base interpreter - importing
-the deepecohab package would load polars and dash from the environment being upgraded.
-POSIX replaces files by rename, so there the app upgrades in place and execs itself.
-"""
-
 import json
 import os
 import shutil
@@ -23,7 +13,9 @@ def can_update() -> bool:
 	uv = shutil.which("uv")
 	if uv is None:
 		return False
-	tools = subprocess.run([uv, "tool", "dir"], capture_output=True, text=True).stdout.strip()
+	tools = subprocess.run(
+		[uv, "tool", "dir"], capture_output=True, text=True, check=False
+	).stdout.strip()
 	return bool(tools) and Path(sys.prefix).resolve().parent == Path(tools).resolve()
 
 
@@ -45,7 +37,7 @@ def upgrade(command: list[str], output: TextIO | None = None, attempts: int = 3)
 	for attempt in range(attempts):
 		if attempt:
 			time.sleep(2)
-		if subprocess.run(command, stdout=output, stderr=output).returncode == 0:
+		if subprocess.run(command, stdout=output, stderr=output, check=False).returncode == 0:
 			return True
 	print("Update failed; starting the installed version.", file=output, flush=True)
 	return False
@@ -57,7 +49,7 @@ def spawn_helper(upgrade_command: list[str], app_command: list[str]) -> subproce
 	The helper learns of the exit from its stdin: the OS closes this end of the pipe when
 	the process goes, whichever way it goes.
 	"""
-	return subprocess.Popen(
+	helper = subprocess.Popen(
 		[
 			getattr(sys, "_base_executable", sys.executable),
 			__file__,
@@ -66,6 +58,13 @@ def spawn_helper(upgrade_command: list[str], app_command: list[str]) -> subproce
 		stdin=subprocess.PIPE,
 		creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
 	)
+	# A dropped Popen closes its end of the pipe at once, which the helper would take
+	# for the exit, so it stays referenced until the process goes.
+	_helpers.append(helper)
+	return helper
+
+
+_helpers: list[subprocess.Popen] = []
 
 
 def restart_in_place(upgrade_command: list[str], app_command: list[str]) -> None:
@@ -93,7 +92,7 @@ def _helper() -> None:
 	print("Waiting for DeepEcoHab to close...", file=output, flush=True)
 	sys.stdin.read()
 	upgrade(upgrade_command, output)
-	sys.exit(subprocess.run(app_command, stdout=output, stderr=output).returncode)
+	sys.exit(subprocess.run(app_command, stdout=output, stderr=output, check=False).returncode)
 
 
 if __name__ == "__main__":

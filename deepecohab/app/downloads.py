@@ -4,17 +4,20 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-import plotly.graph_objects as go
 import polars as pl
 from flask import Blueprint, abort, request, send_file
 
 from deepecohab.app import services
+from deepecohab.app.builder import catalog as builder_catalog, figure as builder_figure
 from deepecohab.core.data_model import DataFrameRegistry, Project, Recording, recording_status
-from deepecohab.plotting.export import export_figure, figure_data_csv
+from deepecohab.plotting import PlotRegistry
+from deepecohab.plotting.export import export_figure, styled
 
 bp = Blueprint("downloads", __name__)
 
 _SPOOL = 32 * 1024 * 1024  #: zips this small stay in memory; bigger ones spill to disk
+#: Werkzeug refuses form bodies over 500 KB; a long recording's timeline posts megabytes.
+_EXPORT_FORM_LIMIT = 512 * 1024 * 1024
 
 
 @bp.after_request
@@ -24,7 +27,9 @@ def _echo_download_token(response):
 	The hidden download frame gives the page no event when a file starts arriving, so this
 	cookie is how the spinner on the button that asked for it knows to stop (clientside.js).
 	"""
-	token = request.values.get("download_token")
+	# The query string, never the form: re-parsing a body refused as too large would raise
+	# again here and turn the 413 into a 500.
+	token = request.args.get("download_token")
 	if token:
 		response.set_cookie("deh-download", token, max_age=60)
 	return response
@@ -136,7 +141,7 @@ def recording_table(pid: str, recording_name: str, name: str):
 
 @bp.route("/download/recording/<pid>/<recording_name>/config.json")
 def recording_config(pid: str, recording_name: str):
-	"""This recording's config.json, as written by :meth:`Recording.update_notes` et al."""
+	"""This recording's config.json, as written by :meth:`Project.update_notes` et al."""
 	recording = _recording(pid, recording_name)
 	return send_file(
 		recording.root / "config.json",
@@ -173,18 +178,36 @@ def _safe_filename(name: str) -> str:
 	return cleaned or "plot"
 
 
+def _plotted(source: dict) -> dict[str, pl.DataFrame]:
+	"""The frames an exported plot was drawn from, rebuilt from the request that drew it.
+
+	Args:
+		source: ``{"builder": {location, state}}`` for the plot builder, else a recording
+			card's ``{"plot", "request", "x_range"}``.
+	"""
+	if "builder" in source:
+		location, state = source["builder"]["location"], source["builder"]["state"]
+		frame, fields = services.builder_frame(location)
+		fields = builder_catalog.in_age_unit(fields, state.get("age_unit", "days"))
+		data = builder_figure.plotted_data(frame, state, fields)
+		return {} if data is None else {"data": data}
+
+	context, values = services.plot_options(source["request"])
+	zoom = {"x_range": source["x_range"]} if source.get("x_range") else {}
+	return PlotRegistry.data(source["plot"], context, **values, **zoom)
+
+
 @bp.route("/export", methods=["POST"])
 def export_plot():
 	"""Fit the posted figure to the requested export size and render it through kaleido."""
+	request.max_form_memory_size = _EXPORT_FORM_LIMIT
 	try:
 		figure = json.loads(request.form["figure"])
 		form = json.loads(request.form["params"])
 	except (KeyError, ValueError):
 		abort(400, "Malformed export request.")
 
-	fig = go.Figure(figure)
-	if form.get("style") == "publication":
-		fig.update_layout(template="publication")
+	fig = styled(figure, form.get("style", ""))
 
 	filename = _safe_filename(form.get("filename") or "plot")
 	fmt = form.get("format", "svg")
@@ -208,7 +231,8 @@ def export_plot():
 		)
 		image_bytes = image_path.read_bytes()
 
-	tables = figure_data_csv(figure) if form.get("csv") else []
+	frames = _plotted(form["data"]) if form.get("csv") and form.get("data") else {}
+	tables = {name: frame for name, frame in frames.items() if not frame.is_empty()}
 	if not tables:
 		return send_file(
 			io.BytesIO(image_bytes), as_attachment=True, download_name=f"{filename}.{fmt}"
@@ -217,8 +241,11 @@ def export_plot():
 	buffer = io.BytesIO()
 	with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
 		zf.writestr(f"{filename}.{fmt}", image_bytes)
-		for index, text in enumerate(tables, 1):
-			zf.writestr(f"{filename}_{index}.csv" if len(tables) > 1 else f"{filename}.csv", text)
+		for name, frame in tables.items():
+			zf.writestr(
+				f"{filename}_{name}.csv" if len(tables) > 1 else f"{filename}.csv",
+				services.csv_ready(frame).write_csv(),
+			)
 	buffer.seek(0)
 	return send_file(
 		buffer, as_attachment=True, download_name=f"{filename}.zip", mimetype="application/zip"

@@ -38,7 +38,7 @@ at = partial(strategies.at, tz=TZ_NAME)
 
 
 @pytest.mark.parametrize(
-	"hour,minute,expected",
+	("hour", "minute", "expected"),
 	[
 		(0, 0, "dark_phase"),  # midnight -> dark (wraps)
 		(6, 59, "dark_phase"),  # just before light starts
