@@ -316,7 +316,7 @@ function _flagErrors(fmt, layout, palettes, prefix) {
 }
 
 /* The Format form for ``fmt`` on ``layout``, field by field in the order of ``keys``: each
- * one's value, placeholder and whether it is off, then the palette menu. */
+ * one's value, placeholder and style (hidden when off), then the palette menu. */
 function _formatForm(fmt, layout, keys, choices, prefix) {
 	const base = _formatBase(layout);
 	const auto = _autoTitles(base);
@@ -332,7 +332,8 @@ function _formatForm(fmt, layout, keys, choices, prefix) {
 	return [
 		keys.map((key) => live[key] ?? (_FORMAT_SELECTS.includes(key) ? null : "")),
 		keys.map(hint),
-		keys.map((key) => auto[_FORMAT_BINDS[key]] === null),
+		// Hidden, not disabled: a field the plot cannot take is not offered.
+		keys.map((key) => (auto[_FORMAT_BINDS[key]] === null ? {display: "none"} : null)),
 		Object.entries(palettes).map(([name, colors]) => ({
 			value: name,
 			label: `${name} · ${colors.length}`,
@@ -447,12 +448,42 @@ function _centreSquare(gd) {
 	slide(gd.querySelector(".g-gtitle"), shift);
 }
 
+/* A side legend wider than this share of the canvas moves below the plot, where it wraps
+ * instead of squeezing the plot off the canvas. */
+const _LEGEND_SIDE_MAX = 1 / 3;
+const _LEGEND_BELOW = {orientation: "h", xref: "container", yref: "container", x: 0, xanchor: "left", y: 0, yanchor: "bottom"};
+
+/* Only a legend the figure left in plotly's default place moves; one a figure pinned stays.
+ * The side width is measured while it is at the side, so a wider canvas can move it back. */
+function _fitLegend(gd) {
+	const layout = gd._fullLayout;
+	const legend = layout && layout.legend;
+	if (!legend || !layout.showlegend) return;
+	const below = (gd.layout.legend || {}).orientation === "h";
+	if (below && !gd._dehLegendW) return;
+	if (!below) {
+		const placed = gd.layout.legend || {};
+		if (placed.x !== undefined || placed.y !== undefined || placed.orientation) return;
+		gd._dehLegendW = legend._width;
+	}
+	const fits = gd._dehLegendW <= _LEGEND_SIDE_MAX * layout.width;
+	if (below === !fits) return;
+	const keys = Object.keys(_LEGEND_BELOW);
+	const update = Object.fromEntries(keys.map((key) => ["legend." + key, fits ? null : _LEGEND_BELOW[key]]));
+	if (fits) gd._dehLegendW = 0;
+	window.Plotly.relayout(gd, update);
+}
+
 new MutationObserver(() => {
 	document.querySelectorAll(".js-plotly-plot").forEach((gd) => {
 		if (gd._dehAfterplot || !gd.on) return;
 		gd._dehAfterplot = true;
-		gd.on("plotly_afterplot", () => _centreSquare(gd));
+		gd.on("plotly_afterplot", () => {
+			_centreSquare(gd);
+			_fitLegend(gd);
+		});
 		_centreSquare(gd);
+		_fitLegend(gd);
 	});
 }).observe(document.body, {childList: true, subtree: true});
 
@@ -553,6 +584,19 @@ document.addEventListener("click", function (event) {
 	if (now) window.dash_clientside.set_props("update-request", {data: Date.now()});
 });
 
+/* The preset-deleted toast's Revert button (see _delete_preset in pages/builder.py). */
+document.addEventListener("click", function (event) {
+	if (!event.target.closest(".deh-preset-revert")) return;
+	window.dash_clientside.set_props("notifications", {hideNotifications: ["preset-deleted"]});
+	window.dash_clientside.set_props("preset-revert", {data: Date.now()});
+});
+
+/* Builder alerts: the close button hides its alert until the next render replaces it. */
+document.addEventListener("click", function (event) {
+	const close = event.target.closest(".deh-alert-close");
+	if (close) close.closest(".deh-alert").style.display = "none";
+});
+
 /* Events table: an event's name folds its bouts away. */
 function _toggleEventGroup(event) {
 	const label = event.target.closest(".deh-ev-group .deh-ev-label");
@@ -563,6 +607,26 @@ function _toggleEventGroup(event) {
 }
 document.addEventListener("click", _toggleEventGroup);
 document.addEventListener("keydown", _toggleEventGroup);
+
+/* Recording tables: a column name sorts the rows by it, again to reverse. A trailing row that
+ * spans columns (the cohort total) stays last; numbers sort as numbers, the rest as text. */
+document.addEventListener("click", function (event) {
+	const th = event.target.closest(".deh-tbl.mini:not(.deh-ev-table) th");
+	if (!th || !th.textContent.trim()) return;
+	const table = th.closest("table"), body = table.tBodies[0];
+	const col = th.cellIndex, dir = th.getAttribute("aria-sort") === "ascending" ? -1 : 1;
+	const rows = [...body.rows], last = rows.at(-1);
+	const pinned = last.querySelector("td[colspan]") ? rows.pop() : null;
+	const key = (row) => row.cells[col].textContent.replace(/[,%\s]/g, "");
+	const cmp = (a, b) => {
+		const x = key(a), y = key(b), nx = parseFloat(x), ny = parseFloat(y);
+		return (isNaN(nx) || isNaN(ny) ? x.localeCompare(y, undefined, {numeric: true}) : nx - ny) * dir;
+	};
+	rows.sort(cmp).forEach((row) => body.append(row));
+	if (pinned) body.append(pinned);
+	table.querySelectorAll("th").forEach((other) => other.removeAttribute("aria-sort"));
+	th.setAttribute("aria-sort", dir > 0 ? "ascending" : "descending");
+});
 
 /* Table, habitat and builder plot cards: the maximize button fills the window with the card itself; the same
  * button, now an X, or Escape puts it back. An open dialog holds focus, so its Escape is its own. */
@@ -715,7 +779,7 @@ window.dash_clientside.deh = {
 	// redraws just those plots; one with no events, or not loaded yet, is left alone.
 	toggleEvents: function (show, figures, ids) {
 		const dc = window.dash_clientside;
-		const isEvent = (item) => item.name === "event-span" || item.name === "event-label";
+		const isEvent = (item) => ["event-span", "event-lane", "event-label"].includes(item.name);
 		const stale = (item) => isEvent(item) && (item.visible !== false) !== show;
 		const toggle = (item) => (isEvent(item) ? Object.assign({}, item, {visible: show}) : item);
 		(figures || []).forEach((fig, i) => {
@@ -724,7 +788,34 @@ window.dash_clientside.deh = {
 			const annotations = layout.annotations || [];
 			if (!shapes.some(stale) && !annotations.some(stale)) return;
 			const next = Object.assign({}, layout, {shapes: shapes.map(toggle), annotations: annotations.map(toggle)});
+			const margins = (layout.meta || {}).dehEventMargins;
+			if (margins) next.margin = show ? margins.on : margins.off;
 			dc.set_props(ids[i], {figure: Object.assign({}, fig, {layout: next})});
+		});
+	},
+
+	// The same repaint plot_theme.apply does on the server, from looks it sent once: the
+	// template, and the literal colours of the phase band and the event outlines. Only the
+	// showing tab's drawn figures still in another theme are set, so a switch redraws just
+	// those and a hidden tab catches up when opened.
+	restyleTheme: function (theme, tab, figures, ids, requests, requestIds, looks) {
+		const look = looks && looks[theme];
+		if (!look) return;
+		const ink = look.template.layout.font.color;
+		const tabs = {};
+		requestIds.forEach((id, i) => (tabs[id.plot] = (requests[i] || {}).tab));
+		const repaint = (shape) => {
+			const phase = (shape.name || "").replace("phase-band-", "");
+			if (shape.name === "event-span") return {...shape, line: {...shape.line, color: look.ink2}};
+			return phase in look.bands ? {...shape, fillcolor: look.bands[phase]} : shape;
+		};
+		(figures || []).forEach((fig, i) => {
+			const layout = fig && fig.layout;
+			if (!layout || tabs[ids[i].plot] !== tab) return;
+			const drawn = layout.template && layout.template.layout && layout.template.layout.font;
+			if (drawn && drawn.color === ink) return;
+			const next = {...layout, template: look.template, shapes: (layout.shapes || []).map(repaint)};
+			window.dash_clientside.set_props(ids[i], {figure: {...fig, layout: next}});
 		});
 	},
 
@@ -737,12 +828,12 @@ window.dash_clientside.deh = {
 	// One run serves every card and sets only the stores and badges that change: every callback
 	// run and every write re-runs the renderer's per-component checks, so one callback per card
 	// made each tab switch several times dearer.
-	plotRequest: function (context, controls, tab, theme, _opts, hover) {
+	plotRequest: function (context, controls, tab, _opts, hover) {
 		const dc = window.dash_clientside;
 		if (!context || !controls) return;
 		const hovered = dc.callback_context.triggered_id === "rec-hover" && hover ? hover.tab : null;
 		const opts = {};
-		dc.callback_context.inputs_list[4].forEach((option) => {
+		dc.callback_context.inputs_list[3].forEach((option) => {
 			(opts[option.id.plot] = opts[option.id.plot] || {})[option.id.option] = option.value;
 		});
 		dc.callback_context.states_list[0].forEach((store) => {
@@ -750,7 +841,7 @@ window.dash_clientside.deh = {
 			if (previous.tab !== tab && previous.tab !== hovered) return;
 			const used = {};
 			(previous.uses || []).forEach((key) => (used[key] = controls[key]));
-			const request = {tab: previous.tab, uses: previous.uses, context: context, controls: used, theme: theme, opts: opts[store.id.plot] || {}};
+			const request = {tab: previous.tab, uses: previous.uses, context: context, controls: used, opts: opts[store.id.plot] || {}};
 			if (JSON.stringify(request) !== JSON.stringify(previous)) dc.set_props(store.id, {data: request});
 		});
 		(dc.callback_context.states_list[1] || []).forEach((badge) => {
@@ -839,12 +930,20 @@ window.dash_clientside.deh = {
 		];
 	},
 
-	openExport: function (_clicks, figures, ids, titles, titleIds, context) {
+	// The export route rebuilds the CSV from the card's own plot request. The zoom store
+	// outlives a new request, so it counts only while the timeline still shows that zoom.
+	openExport: function (_clicks, figures, ids, titles, titleIds, context, requests, requestIds, zoom) {
 		const picked = _pickPlot(figures, ids);
 		const recording = (context || {}).recording || "recording";
+		const request = requests[requestIds.findIndex((id) => id.plot === picked.name)];
+		const range = ((picked.figure.layout || {}).xaxis || {}).range;
+		const zoomed = picked.name === "recording-timeline" && zoom && JSON.stringify(range) === JSON.stringify(zoom);
+		const data = request && request.context
+			? {plot: picked.name, request: request, x_range: zoomed ? zoom : null}
+			: null;
 		return [
 			true,
-			{figure: picked.figure, title: _plotTitle(picked.name, titles, titleIds)},
+			{figure: picked.figure, title: _plotTitle(picked.name, titles, titleIds), data: data},
 			(recording + "__" + picked.name).toLowerCase().split(" ").join("-"),
 		];
 	},
@@ -896,7 +995,7 @@ window.dash_clientside.deh = {
 		const h = figure && figure.layout && figure.layout.height;
 		if (!stage || !w || !h || !stage.clientWidth) return dc.no_update;
 
-		const scale = Math.min(1, stage.clientWidth / w, stage.clientHeight / h);
+		const scale = Math.min(stage.clientWidth / w,stage.clientHeight / h);
 		return {
 			width: w + "px",
 			height: h + "px",

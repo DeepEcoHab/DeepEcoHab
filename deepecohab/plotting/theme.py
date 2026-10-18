@@ -3,6 +3,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 
+from deepecohab.plotting.registry import Figure
+
 
 def sample_palette(count: int, cmap: str = "Phase") -> list[str]:
 	"""Sample ``count`` visually distinct colours from any named plotly colorscale.
@@ -24,6 +26,9 @@ DEFAULT_COLORWAY: list[str] = sample_palette(12)
 FONT = "Geist, Segoe UI, system-ui, sans-serif"
 FONT_SIZE = 13
 
+#: Corner radius in px of bars, boxes and heatmap tiles alike; rounded_corners.js repeats it.
+CORNER_RADIUS = 6
+
 #: House sequential scale for heatmaps, teal through gold, replacing plain Viridis.
 _AURORA_STOPS: list[str] = [
 	"rgba(22, 191, 168, 0.8)",  # teal
@@ -43,6 +48,15 @@ AURORA: list[list] = [
 	for position, color in zip(
 		np.linspace(0, 1, len(_AURORA_STOPS)).tolist(), _AURORA_STOPS, strict=True
 	)
+]
+
+#: Heatmap scale: the blueprint's three series hues, teal through violet to orange, so a
+#: heatmap sits with the Phase-coloured plots around it. Opacity rises with the value, from
+#: 0.5 to 1. Mid-luminance, so it reads on either ground.
+LAGOON: list[list] = [
+	[0, "rgba(31, 159, 181)"],
+	[0.5, "rgba(118, 80, 200)"],
+	[1, "rgba(194, 85, 31)"],
 ]
 
 _COLORSCALE = {"sequential": AURORA, "sequentialminus": "Plasma", "diverging": "curl"}
@@ -148,6 +162,14 @@ READ_LOOKS: dict[str, str] = {
 	"bad": "#f07a82",
 }
 
+#: An event's lane colour by its place among the recording's events, the dark-theme
+#: --k-measure / --k-dim / --k-time and --ink-3; mid-luminance, so shared by both themes.
+EVENT_LOOKS: list[str] = ["#e38c5f", "#72a4e4", "#45bd9e", "#7b8988"]
+
+#: The wash over the data where any event ran: --ink-3 at a strength that reads on either
+#: ground, one neutral for every event, so overlapping events darken rather than mix hues.
+EVENT_TINT = "rgba(123, 137, 136, 0.16)"
+
 #: Trace defaults every theme shares: a bare line is a smooth curve with no markers.
 _DATA = {"scatter": [{"mode": "lines", "line": {"shape": "spline"}}]}
 
@@ -162,6 +184,7 @@ def _template(tokens: dict[str, str]) -> go.layout.Template:
 		"spikecolor": tokens["ink2"],
 		"tickfont": {"color": tokens["ink2"]},
 		"title": {"font": {"color": tokens["ink2"]}},
+		"automargin": True,
 	}
 	# Colour bars and annotations (subplot titles among them) otherwise fall back to font.color.
 	label = {"color": tokens["ink2"]}
@@ -172,6 +195,7 @@ def _template(tokens: dict[str, str]) -> go.layout.Template:
 			paper_bgcolor="rgba(0,0,0,0)",
 			plot_bgcolor="rgba(0,0,0,0)",
 			font={"family": FONT, "size": FONT_SIZE, "color": tokens["ink"]},
+			title={"font": label},
 			xaxis=axis,
 			yaxis=axis,
 			shapedefaults={"line": {"color": tokens["axis"]}},
@@ -231,17 +255,39 @@ pio.templates["publication"] = go.layout.Template(
 )
 
 
-def apply(figure: go.Figure, name: str) -> go.Figure:
-	"""Put ``figure`` in the named theme, phase bands included.
+def apply(figure: Figure, name: str) -> Figure:
+	"""Put ``figure`` in the named theme, phase bands and event outlines included.
 
 	The template carries colour for everything a trace or an axis draws, but a shape holds a
 	literal colour - so the phase band :func:`~deepecohab.plotting.plot_factory._phase_band`
-	drew has to be repainted here. Anything but ``"dark"`` reads in the light colours,
-	``"publication"`` among them.
+	drew, and the outlines events leave on a heatmap, have to be repainted here. Anything but
+	``"dark"`` reads in the light colours, ``"publication"`` among them.
 	"""
-	figure.update_layout(template=name or "light")
+	layout = figure["layout"]
+	layout["template"] = pio.templates[name or "light"].to_plotly_json()
+	bands = {
+		f"phase-band-{phase}": color
+		for phase, color in PHASE_BAND.get(name, PHASE_BAND["light"]).items()
+	}
+	ink = _TOKENS.get(name, _TOKENS["light"])["ink2"]
 
-	for phase, color in PHASE_BAND.get(name, PHASE_BAND["light"]).items():
-		figure.update_shapes(fillcolor=color, selector={"name": f"phase-band-{phase}"})
+	for shape in layout.get("shapes", []):
+		if shape.get("name") in bands:
+			shape["fillcolor"] = bands[shape["name"]]
+		elif shape.get("name") == "event-span":
+			shape.setdefault("line", {})["color"] = ink
 
 	return figure
+
+
+def looks(name: str) -> dict:
+	"""What :func:`apply` paints for ``name``, so the browser can repaint a figure itself.
+
+	``deh.restyleTheme`` swaps a dashboard figure's theme with these rather than having the
+	server rebuild it.
+	"""
+	return {
+		"template": pio.templates[name].to_plotly_json(),
+		"bands": PHASE_BAND.get(name, PHASE_BAND["light"]),
+		"ink2": _TOKENS.get(name, _TOKENS["light"])["ink2"],
+	}

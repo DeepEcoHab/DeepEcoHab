@@ -13,12 +13,30 @@ from typing import (
 	get_type_hints,
 )
 
-import plotly.graph_objects as go
+import polars as pl
 
 if TYPE_CHECKING:
 	from deepecohab.plotting.context import PlotContext
 
 ChoiceResolver = Callable[["PlotContext"], Sequence[Any]]
+
+
+class Figure(dict):
+	"""A plot as the ``data`` and ``layout`` dict plotly.js draws.
+
+	Built without plotly's figure objects, whose validation costs many times what drawing
+	the data does; a ``dcc.Graph`` takes the dict as it is, and
+	:func:`~deepecohab.plotting.to_figure` turns it into a ``go.Figure``. A ``dict`` subclass
+	only so it can carry the frames it was drawn from, which stay out of its JSON.
+	"""
+
+	_plotted_frames: dict[str, pl.DataFrame]
+
+
+def plotted(figure: Figure, **frames: pl.DataFrame) -> Figure:
+	"""``figure``, carrying the frames it was drawn from for :meth:`PlotRegistry.data`."""
+	figure._plotted_frames = frames
+	return figure
 
 
 @dataclass(frozen=True)
@@ -59,7 +77,7 @@ class PlotSpec:
 	info: str
 	requires: tuple[str, ...]
 	options: tuple[Option, ...]
-	builder: Callable[..., go.Figure]
+	builder: Callable[..., Figure]
 	dynamic_choices: Mapping[str, ChoiceResolver]
 
 	def options_for(self, context: "PlotContext") -> tuple[Option, ...]:
@@ -118,7 +136,7 @@ def _literal_choices(annotation: Any) -> tuple[Any, ...]:
 
 def _options_from_signature(
 	name: str,
-	func: Callable[..., go.Figure],
+	func: Callable[..., Figure],
 	dynamic: frozenset[str],
 ) -> tuple[Option, ...]:
 	"""Read a builder's keyword-only parameters as options."""
@@ -182,7 +200,7 @@ class PlotRegistry:
 		info: str,
 		requires: tuple[str, ...],
 		dynamic_choices: Mapping[str, ChoiceResolver] | None = None,
-	) -> Callable[[Callable[..., go.Figure]], Callable[..., go.Figure]]:
+	) -> Callable[[Callable[..., Figure]], Callable[..., Figure]]:
 		"""Register a plot builder under ``name``.
 
 		Args:
@@ -201,7 +219,7 @@ class PlotRegistry:
 		"""
 		resolvers = dict(dynamic_choices or {})
 
-		def wrapper(func: Callable[..., go.Figure]) -> Callable[..., go.Figure]:
+		def wrapper(func: Callable[..., Figure]) -> Callable[..., Figure]:
 			options = _options_from_signature(name, func, frozenset(resolvers))
 			unknown = set(resolvers) - {option.name for option in options}
 
@@ -245,7 +263,7 @@ class PlotRegistry:
 		return list(cls._specs)
 
 	@classmethod
-	def build(cls, name: str, context: "PlotContext", **options: Any) -> go.Figure:
+	def build(cls, name: str, context: "PlotContext", **options: Any) -> Figure:
 		"""Build a plot.
 
 		Args:
@@ -288,3 +306,11 @@ class PlotRegistry:
 				)
 
 		return plot_spec.builder(context, **values)
+
+	@classmethod
+	def data(cls, name: str, context: "PlotContext", **options: Any) -> dict[str, pl.DataFrame]:
+		"""The frames a plot is drawn from, by name: what its CSV export holds.
+
+		Takes the arguments of :meth:`build`, and raises as it does.
+		"""
+		return getattr(cls.build(name, context, **options), "_plotted_frames", {})

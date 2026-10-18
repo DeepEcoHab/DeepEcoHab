@@ -33,7 +33,7 @@ same line. Open an issue first if none exists; upstream issues (`owner/repo#N`) 
 
 ```python
 # TODO(KonradDanielewski): drop the legacy loader #42
-# FIXME(ula-w): off by one on DST days https://github.com/KonradDanielewski/DeepEcoHab/issues/57
+# FIXME(ula-w): off by one on DST days https://github.com/DeepEcoHab/DeepEcoHab/issues/57
 ```
 
 ```js

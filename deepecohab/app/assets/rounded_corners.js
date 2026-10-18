@@ -12,7 +12,8 @@
 	 * every box path ("M x,y H|V .. H|V .. H|V .. Z", orientation-agnostic) with rounded
 	 * corners to match barcornerradius. Median and whiskers are separate open subpaths and
 	 * stay square; notched boxes don't match and are left alone. */
-	const BOX_RADIUS = 6;
+	/* Same radius as plotting.theme.CORNER_RADIUS, which bars use, so every shape rounds alike. */
+	const RADIUS = 6;
 	const NUM = "(-?[\\d.]+(?:e[-+]?\\d+)?)";
 	const RECT = new RegExp(`M${NUM},${NUM}([HV])${NUM}([HV])${NUM}([HV])${NUM}Z`);
 
@@ -42,21 +43,22 @@
 	}
 
 	function roundBoxes(gd) {
-		gd.querySelectorAll("path.box").forEach((path) => roundPath(path, BOX_RADIUS));
+		gd.querySelectorAll("path.box").forEach((path) => roundPath(path, RADIUS));
 	}
 
 	/* A heatmap with gaps between its cells reads as tiles, so the tiles are rounded too.
 	 * Plotly paints every cell into one raster image, so each redraw clips that image to a
 	 * rounded rect per cell, placed where plotly paints it: the cell's edges, inset by half
-	 * the gap. Event outlines drawn on the cells (the recording pulse's) are rounded one
+	 * the gap. A trace with meta "tiles" has no plotly gap; its gap is TILE_GAP of the
+	 * shorter cell side, so the spacing keeps its proportion at any plot size. Event outlines drawn on the cells (the recording pulse's) are rounded one
 	 * pixel wider, to stay concentric with the tile inside. */
-	const TILE_RADIUS = 10;
+	const TILE_GAP = 0.1;
 
 	function roundTiles(gd) {
 		const layout = gd._fullLayout;
 		(gd.calcdata || []).forEach((cd) => {
 			const {trace, node3, x, y} = cd[0];
-			if (trace.type !== "heatmap" || !(trace.xgap || trace.ygap) || !node3) return;
+			if (trace.type !== "heatmap" || !(trace.meta === "tiles" || trace.xgap || trace.ygap) || !node3) return;
 			const group = node3.node();
 			const image = group.querySelector("image");
 			if (!image) return;
@@ -65,15 +67,24 @@
 			const yaxis = layout["yaxis" + trace.yaxis.slice(1)];
 			const xs = x.map((value) => xaxis.c2p(value));
 			const ys = y.map((value) => yaxis.c2p(value));
+			let xgap = trace.xgap || 0;
+			let ygap = trace.ygap || 0;
+			if (trace.meta === "tiles") {
+				const side = Math.min(
+					Math.abs(xs[xs.length - 1] - xs[0]) / (xs.length - 1),
+					Math.abs(ys[ys.length - 1] - ys[0]) / (ys.length - 1),
+				);
+				xgap = ygap = side * TILE_GAP;
+			}
 			const tiles = [];
 			for (let i = 1; i < xs.length; i++) {
 				for (let j = 1; j < ys.length; j++) {
-					const width = Math.abs(xs[i] - xs[i - 1]) - trace.xgap;
-					const height = Math.abs(ys[j] - ys[j - 1]) - trace.ygap;
+					const width = Math.abs(xs[i] - xs[i - 1]) - xgap;
+					const height = Math.abs(ys[j] - ys[j - 1]) - ygap;
 					if (width <= 0 || height <= 0) continue;
-					const left = Math.min(xs[i], xs[i - 1]) + Math.floor(trace.xgap / 2);
-					const top = Math.min(ys[j], ys[j - 1]) + Math.floor(trace.ygap / 2);
-					const r = Math.min(TILE_RADIUS, width / 2, height / 2);
+					const left = Math.min(xs[i], xs[i - 1]) + xgap / 2;
+					const top = Math.min(ys[j], ys[j - 1]) + ygap / 2;
+					const r = Math.min(RADIUS, width / 2, height / 2);
 					tiles.push(`<rect x="${left}" y="${top}" width="${width}" height="${height}" rx="${r}"/>`);
 				}
 			}
@@ -86,12 +97,49 @@
 			layout.shapes.forEach((shape, index) => {
 				if (shape.name !== "event-span" || shape.xref !== trace.xaxis || shape.yref !== trace.yaxis) return;
 				gd.querySelectorAll(`.shapelayer path[data-index="${index}"]`)
-					.forEach((path) => roundPath(path, TILE_RADIUS + 1));
+					.forEach((path) => roundPath(path, RADIUS + 1));
+			});
+		});
+	}
+
+	/* Event lane bars carry their tooltip in layout.meta.dehEventTips, one per bar in shape
+	 * order. Plotly has no hover for shapes and an SVG <title> waits about a second, so one
+	 * floating box follows the pointer over a bar instantly. */
+	let tipBox = null;
+
+	function showTip(event, text) {
+		if (!tipBox) {
+			tipBox = document.createElement("div");
+			tipBox.style.cssText = "position:fixed;z-index:10000;pointer-events:none;padding:4px 8px;" +
+				"border:1px solid currentColor;border-radius:4px;font:12px sans-serif;white-space:pre;";
+			document.body.appendChild(tipBox);
+		}
+		const style = getComputedStyle(document.body);
+		tipBox.style.background = style.backgroundColor;
+		tipBox.style.color = style.color;
+		tipBox.textContent = text;
+		tipBox.style.left = `${event.clientX + 12}px`;
+		tipBox.style.top = `${event.clientY + 12}px`;
+		tipBox.style.display = "block";
+	}
+
+	function tipLanes(gd) {
+		const layout = gd._fullLayout;
+		const tips = (layout.meta || {}).dehEventTips || [];
+		let next = 0;
+		layout.shapes.forEach((shape, index) => {
+			if (shape.name !== "event-lane") return;
+			const tip = tips[next++];
+			gd.querySelectorAll(`.shapelayer path[data-index="${index}"]`).forEach((path) => {
+				path.style.pointerEvents = "all";
+				path.onmousemove = tip ? (event) => showTip(event, tip) : null;
+				path.onmouseleave = () => tipBox && (tipBox.style.display = "none");
 			});
 		});
 	}
 
 	function round(gd) {
+		tipLanes(gd);
 		roundBoxes(gd);
 		roundTiles(gd);
 	}

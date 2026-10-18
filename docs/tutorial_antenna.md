@@ -491,7 +491,7 @@ during_novel_object = recording.load_results("activity_df").join(
 )
 ```
 
-Plots shade event bouts on their time axes; see [Plotting](./plotting.md#common-options).
+Plots mark event bouts on their time axes; see [Plotting](./plotting.md#common-options).
 
 ## Tube test
 

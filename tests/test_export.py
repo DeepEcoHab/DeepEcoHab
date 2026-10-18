@@ -69,17 +69,81 @@ def test_wide_legend_warns():
 	assert any("legend takes" in note for note in notes)
 
 
-def test_event_label_is_wrapped_when_shown_and_dropped_otherwise():
-	long_text = "Auditory Tone Test " * 4
+def test_event_lanes_keep_their_room_when_shown_and_every_mark_drops_otherwise():
+	lane = {"type": "rect", "yref": "paper", "ysizemode": "pixel", "yanchor": 1, "y0": 4, "y1": 40}
 	fig = go.Figure(
-		layout={"shapes": [{"name": "event-label", "type": "rect", "label": {"text": long_text}}]}
+		layout={
+			"shapes": [
+				{**lane, "name": "event-lane"},
+				{"type": "rect", "name": "event-span", "yref": "y domain", "y0": 0, "y1": 1},
+				{"type": "line", "name": "phase-switch"},
+			],
+			"annotations": [{"name": "event-label", "text": "Tone", "yref": "paper", "y": 1.02}],
+		}
 	)
 
 	shown, _ = export.fit_for_export(fig, 174, 140, 8, show_events=True)
 	hidden, _ = export.fit_for_export(fig, 174, 140, 8, show_events=False)
 
-	assert "<br>" in shown.layout.shapes[0].label.text
-	assert hidden.layout.shapes[0].label.text == ""
+	assert shown.layout.margin.t >= 40
+	assert shown.layout.annotations[0].y == 1.02
+	assert [shape.name for shape in hidden.layout.shapes] == ["phase-switch"]
+	assert hidden.layout.annotations == ()
+
+
+def test_shown_events_are_unhidden_when_the_dashboard_toggle_hid_them():
+	fig = {
+		"layout": {
+			"shapes": [{"type": "rect", "name": "event-span", "visible": False}],
+			"annotations": [{"name": "event-label", "text": "Tone", "visible": False}],
+		}
+	}
+
+	shown, _ = export.fit_for_export(fig, 174, 140, 8, show_events=True)
+
+	assert shown["layout"]["shapes"][0]["visible"] is True
+	assert shown["layout"]["annotations"][0]["visible"] is True
+	assert fig["layout"]["shapes"][0]["visible"] is False
+
+
+def test_the_top_event_lanes_name_is_not_clipped_by_the_margin():
+	"""A lane's name is taller than its 6 px bar, so the margin clears the name, not the bar."""
+	lane = {"type": "rect", "yref": "paper", "ysizemode": "pixel", "yanchor": 1, "y0": 18, "y1": 24}
+	name = {"name": "event-label", "text": "Tone", "yref": "paper", "y": 1, "yshift": 21}
+	fig = go.Figure(layout={"shapes": [{**lane, "name": "event-lane"}], "annotations": [name]})
+
+	fitted, _ = export.fit_for_export(fig, 85, 64, 12)
+
+	assert fitted.layout.margin.t >= 21 + 12 * 96 / 72 * export._TICK_SCALE / 2
+
+
+def _pair_matrices(ids: list[str]) -> go.Figure:
+	"""Four square animal-by-animal panels in a row, as the sociability heatmap draws them."""
+	fig = make_subplots(rows=1, cols=4, horizontal_spacing=0.06, subplot_titles=list("ABCD"))
+	for col in range(1, 5):
+		fig.add_trace(go.Heatmap(z=np.ones((len(ids), len(ids))), x=ids, y=ids), row=1, col=col)
+		fig.update_yaxes(scaleanchor="x" if col == 1 else f"x{col}", row=1, col=col)
+	return fig
+
+
+def test_square_panels_wrap_into_the_grid_that_draws_them_largest():
+	ids = [f"0065-016198{n:04}" for n in range(5)]
+
+	fitted, _ = export.fit_for_export(_pair_matrices(ids), 85, 64, 8)
+	wide, _ = export.fit_for_export(_pair_matrices(ids), 180, 64, 8)
+
+	top, bottom = fitted.layout.yaxis.domain, fitted.layout.yaxis3.domain
+	assert fitted.layout.yaxis2.domain == top
+	assert fitted.layout.yaxis4.domain == bottom
+	assert bottom[1] < top[0]
+	assert fitted.layout.xaxis3.domain == fitted.layout.xaxis.domain
+	titles = {note.text: (note.x, note.y) for note in fitted.layout.annotations}
+	assert titles["C"] == pytest.approx((sum(fitted.layout.xaxis3.domain) / 2, bottom[1]), abs=1e-3)
+	# The rows already name the columns, and long column labels would eat the panels' height.
+	assert not any(fitted.layout[f"xaxis{n}"].showticklabels for n in ("", 2, 3, 4))
+	# Wide enough for one row, whose rotated labels fit in the height under it.
+	assert wide.layout.yaxis3.domain == (0, 1)
+	assert wide.layout.xaxis3.showticklabels
 
 
 def test_shape_and_scatter_lines_are_capped_at_1_5px():
@@ -92,6 +156,67 @@ def test_shape_and_scatter_lines_are_capped_at_1_5px():
 
 	assert fitted.data[0].line.width == 1.5
 	assert fitted.layout.shapes[0].line.width == 1.5
+
+
+def test_timeline_bars_fill_their_row_instead_of_the_line_cap():
+	fig = go.Figure(
+		go.Scattergl(x=[1, 2], y=[0, 0], mode="lines", line={"width": 10}),
+		layout={"yaxis": {"range": [3.5, -0.5]}},
+	)
+
+	small, _ = export.fit_for_export(fig, 85, 64, 8)
+	tall, _ = export.fit_for_export(fig, 85, 128, 8)
+
+	assert small.data[0].line.width > export._MAX_LINE_PX
+	assert tall.data[0].line.width > 2 * small.data[0].line.width
+
+
+def test_scattergl_without_a_row_range_takes_the_line_cap():
+	fig = go.Figure(go.Scattergl(x=[1, 2], y=[0, 0], mode="lines", line={"width": 10}))
+
+	fitted, _ = export.fit_for_export(fig, 85, 64, 8)
+
+	assert fitted.data[0].line.width == export._MAX_LINE_PX
+
+
+def test_a_heatmaps_own_colorbar_is_sized_and_cleared_by_the_legend():
+	fig = go.Figure(
+		[go.Heatmap(z=[[1, 2]], colorbar={"thickness": 30}), go.Scatter(x=[1], y=[1], name="a")],
+		layout={"showlegend": True},
+	)
+
+	fitted, _ = export.fit_for_export(fig, 85, 64, 8)
+
+	assert fitted.data[0].colorbar.thickness == pytest.approx(
+		8 * 96 / 72 * export._COLORBAR_THICKNESS
+	)
+	assert fitted.data[0].colorbar.tickfont.size == pytest.approx(8 * 96 / 72 * export._TICK_SCALE)
+	assert fitted.layout.legend.x > 1.02  # past the colour bar
+
+
+def test_show_legend_false_drops_colorbars_too():
+	fig = go.Figure(
+		go.Heatmap(z=[[1, 2]], coloraxis="coloraxis"),
+		layout={"coloraxis": {"colorscale": "Viridis"}},
+	)
+	fig.add_heatmap(z=[[1, 2]])
+
+	fitted, _ = export.fit_for_export(fig, 85, 64, 8, show_legend=False)
+
+	assert fitted.layout.coloraxis.showscale is False
+	assert fitted.data[1].showscale is False
+
+
+def test_a_hidden_legend_takes_no_room_and_raises_no_warning():
+	fig = go.Figure(
+		[go.Scatter(x=[1], y=[1], name="a very long series name indeed")],
+		layout={"showlegend": False},
+	)
+
+	fitted, notes = export.fit_for_export(fig, width_mm=40, height_mm=64, pt=12)
+
+	assert notes == []
+	assert fitted.layout.legend.x is None
 
 
 def test_axes_only_a_trace_names_are_fitted_too():
@@ -168,69 +293,6 @@ def test_too_many_short_panels_warns():
 	assert any("panels get" in note for note in notes)
 
 
-def test_figure_data_csv_extracts_xy_traces():
-	fig = go.Figure(go.Scatter(x=[1, 2], y=[3, 4], name="A")).to_dict()
-
-	lines = export.figure_data_csv(fig)[0].splitlines()
-
-	assert lines[0] == "trace,x,y"
-	assert "A,1,3" in lines
-	assert "A,2,4" in lines
-
-
-def test_figure_data_csv_flattens_heatmap_z():
-	fig = go.Figure(go.Heatmap(x=["c1", "c2"], y=["r1"], z=[[1, 2]])).to_dict()
-
-	lines = export.figure_data_csv(fig)[0].splitlines()
-
-	assert lines[0] == "trace,x,y,z"
-	assert "heatmap,c2,r1,2" in lines
-
-
-def test_figure_data_csv_writes_one_table_per_subplot():
-	"""A line beside horizontal bars: one table each, though the bars' y holds names.
-
-	Past polars' 100-row inference window, one shared table used to fail on the names.
-	"""
-	fig = go.Figure(go.Scatter(x=list(range(150)), y=[0.5] * 150, name="A"))
-	fig.add_trace(go.Bar(x=[75], y=["A"], orientation="h", name="A", xaxis="x2", yaxis="y2"))
-
-	lines, bars = (table.splitlines() for table in export.figure_data_csv(fig.to_dict()))
-
-	assert len(lines) == 151 and lines[1] == "A,0,0.5"
-	assert bars == ["trace,x,y", "A,75,A"]
-
-
-def test_figure_data_csv_returns_none_for_untabular_traces():
-	fig = go.Figure(go.Pie(labels=["a"], values=[1])).to_dict()
-
-	assert export.figure_data_csv(fig) == []
-
-
-def test_figure_data_csv_decodes_plotlys_typed_array_encoding():
-	"""plotly.py serialises a numpy-backed trace's numbers as {dtype, bdata}, not a list."""
-	fig = go.Figure(
-		go.Scatter(x=np.array([1, 2], dtype="i8"), y=np.array([3, 4], dtype="i8"))
-	).to_dict()
-	assert isinstance(fig["data"][0]["x"], dict)  # confirms the encoding actually kicked in
-
-	lines = export.figure_data_csv(fig)[0].splitlines()
-
-	assert "1" in lines[1].split(",") and "3" in lines[1].split(",")
-	assert "2" in lines[2].split(",") and "4" in lines[2].split(",")
-
-
-def test_figure_data_csv_decodes_typed_array_heatmap_z_with_shape():
-	fig = go.Figure(
-		go.Heatmap(x=["c1", "c2"], y=["r1"], z=np.array([[1, 2]], dtype="f8"))
-	).to_dict()
-	assert isinstance(fig["data"][0]["z"], dict)
-
-	lines = export.figure_data_csv(fig)[0].splitlines()
-
-	assert "heatmap,c2,r1,2.0" in lines
-
-
 def test_export_keeps_rounded_boxes_and_tiles(tmp_path):
 	if not export.ensure_chrome_available():
 		pytest.skip("kaleido has no Chrome to render through")
@@ -246,3 +308,21 @@ def test_export_keeps_rounded_boxes_and_tiles(tmp_path):
 	box = next(node for node in svg.iter(f"{ns}path") if node.get("class") == "box")
 	assert "Q" in box.get("d")
 	assert next(svg.iter(f"{ns}image")).get("clip-path", "").startswith("url(#deh-tiles-")
+
+
+def test_tile_gap_scales_with_the_cells(tmp_path):
+	if not export.ensure_chrome_available():
+		pytest.skip("kaleido has no Chrome to render through")
+	gaps = []
+	for size in (60, 120):
+		fig = go.Figure(go.Heatmap(z=[[1, 2], [3, 4]], meta="tiles"))
+		path = tmp_path / f"tiles{size}.svg"
+		export.export_figure(fig, path, size, size, 8, "svg")
+		svg = ET.parse(path).getroot()
+		rects = [r for r in svg.iter("{http://www.w3.org/2000/svg}rect") if r.get("rx")]
+		a, b = sorted(rects, key=lambda r: (float(r.get("y")), float(r.get("x"))))[:2]
+		gaps.append(
+			(float(b.get("x")) - float(a.get("x")) - float(a.get("width"))) / float(a.get("width"))
+		)
+	assert gaps[0] > 0
+	assert gaps[0] == pytest.approx(gaps[1], rel=0.05)

@@ -1,10 +1,10 @@
 from dataclasses import dataclass, field
 
-import plotly.graph_objects as go
 import polars as pl
 
 from deepecohab.plotting import theme
 from deepecohab.plotting.context import LabelBy, PlotContext
+from deepecohab.plotting.registry import Figure
 
 COLOR_COLUMNS: tuple[str, ...] = (
 	"animal_id",
@@ -66,6 +66,15 @@ class ColorMapping:
 	def order(self) -> list[str]:
 		"""Trace/category order matching :attr:`trace_column`."""
 		return self.categories if self.group_mean else self.animal_order
+
+	@property
+	def px_args(self) -> dict:
+		"""The plotly express colour arguments drawing one trace per :attr:`trace_column` value."""
+		return {
+			"color": self.trace_column,
+			"color_discrete_map": self.trace_colors,
+			"category_orders": {self.trace_column: self.order},
+		}
 
 
 def available_attributes(context: PlotContext) -> list[str]:
@@ -208,28 +217,31 @@ def mean_by_group(frame: pl.DataFrame, mapping: ColorMapping, values: list[str])
 	return grouped
 
 
-def collapse_legend(figure: go.Figure, mapping: ColorMapping) -> None:
+def collapse_legend(figure: Figure, mapping: ColorMapping) -> None:
 	"""Fold per-animal traces into one legend entry per colour category.
 
 	The categories' colours also become the figure's ``colorway``, which is how the
-	recording page's Format tells them apart from any other colour to swap a palette.
+	recording page's Format tells them apart from any other colour to swap a palette,
+	and the mapping's legend title becomes the legend's.
 
 	Args:
 		figure: a figure whose traces are named after animals.
 		mapping: the colour mapping those traces were built from.
 	"""
-	figure.update_layout(colorway=list(mapping.colors.values()))
+	layout = figure["layout"]
+	layout["colorway"] = list(mapping.colors.values())
+	layout.setdefault("legend", {})["title"] = {"text": mapping.legend_title}
 	seen: set[str] = set()
 
-	for trace in figure.data:
-		category = mapping.category_by_animal.get(trace.name, trace.name)
-		trace.legendgroup = category
-		trace.name = category
+	for trace in figure["data"]:
+		category = mapping.category_by_animal.get(trace["name"], trace["name"])
+		trace["legendgroup"] = category
+		trace["name"] = category
 
 		# An explicitly hidden trace, such as an error band, stays hidden and does
 		# not claim the category its visible sibling still needs.
-		if trace.showlegend is False:
+		if trace.get("showlegend") is False:
 			continue
 
-		trace.showlegend = category not in seen
+		trace["showlegend"] = category not in seen
 		seen.add(category)

@@ -2,9 +2,10 @@ import datetime as dt
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from itertools import combinations, product
+from itertools import combinations, permutations, product
 from typing import Literal
 
+import networkx as nx
 import numpy as np
 import polars as pl
 
@@ -80,6 +81,9 @@ def prep_event_spans(
 
 	On a binned axis a span covers every bin the event overlaps, from half a bin before
 	the first to half a bin after the last, since each point stands for its whole bin.
+	On the day axis, given the context's ``experiment_start``, a bout instead spans the
+	part of its days it really ran - a day being 24 hours from that start, as ``get_day``
+	counts - so an hour-long bout is not drawn as a whole day.
 
 	Args:
 		context: the context whose ``event_bouts`` table is read.
@@ -93,9 +97,10 @@ def prep_event_spans(
 		recording analysed before events existed.
 	"""
 	if "event_bouts" not in context:
-		return pl.DataFrame(schema=["event", "position", "x0", "x1"])
+		return pl.DataFrame(schema=["event", "position", "x0", "x1", "start", "end"])
 
 	bouts = context.table("event_bouts").filter(window_filter(days_range, granularity, hours_range))
+	naive = pl.col("start", "end").dt.replace_time_zone(None)
 
 	# Plotly draws a trace's datetimes as naive wall-clock times, so the spans must be too.
 	if x == "datetime":
@@ -104,11 +109,30 @@ def prep_event_spans(
 			"position",
 			pl.col("start").dt.replace_time_zone(None).alias("x0"),
 			pl.col("end").dt.replace_time_zone(None).alias("x1"),
+			naive,
 		).unique(maintain_order=True)
 
+	if x == "day" and context.experiment_start is not None:
+		origin = pl.lit(context.experiment_start)
+
+		def days(column: str) -> pl.Expr:
+			return (pl.col(column) - origin).dt.total_microseconds() / 86_400e6 + 0.5
+
+		# Clipped to the days kept, so a bout running past the window stops at its edge.
+		return (
+			bouts.group_by("event", "position", "start", "end")
+			.agg(
+				x0=days("start").first().clip(lower_bound=pl.col("day").cast(pl.Int64).min() - 0.5),
+				x1=days("end").first().clip(upper_bound=pl.col("day").cast(pl.Int64).max() + 0.5),
+			)
+			.with_columns(naive)
+			.sort("event", "position", "x0")
+		)
+
 	return (
-		bouts.select("event", "position", pl.col(x).cast(pl.Int64))
-		.unique()
+		bouts.select("event", "position", pl.col(x).cast(pl.Int64), naive)
+		.group_by("event", "position", x)
+		.agg(pl.col("start").min(), pl.col("end").max())
 		.sort("event", "position", x)
 		# A gap between neighbouring bins starts a new span.
 		.with_columns(
@@ -119,7 +143,12 @@ def prep_event_spans(
 			.alias("run")
 		)
 		.group_by("event", "position", "run")
-		.agg((pl.col(x).min() - 0.5).alias("x0"), (pl.col(x).max() + 0.5).alias("x1"))
+		.agg(
+			(pl.col(x).min() - 0.5).alias("x0"),
+			(pl.col(x).max() + 0.5).alias("x1"),
+			pl.col("start").min(),
+			pl.col("end").max(),
+		)
 		.drop("run")
 	)
 
@@ -133,9 +162,9 @@ def prep_timeline(
 ) -> pl.DataFrame:
 	"""Every animal's position intervals within the selected window, as timeline bars.
 
-	Reads ``main_df`` directly rather than a downstream table, so each row is one real
-	visit - a registration's ``time_spent`` is the gap since the animal's previous one,
-	so it ran from ``datetime - time_spent`` to ``datetime``.
+	Reads ``padded_df``, whose minute pieces are dated by where they start, so a visit that
+	began before the window but runs into it still draws from the window's edge. A piece
+	ran from ``datetime - time_spent`` to ``datetime``; neighbours merge into bars below.
 
 	A week holds hundreds of thousands of registrations, nearly all narrower than a
 	pixel, so the span on show - the window, or ``x_range`` once zoomed in - is cut into
@@ -147,7 +176,7 @@ def prep_timeline(
 	included, are naive wall-clock, as plotly draws them.
 	"""
 	visits = (
-		context.table("main_df")
+		context.table("padded_df")
 		.lazy()
 		.filter(window_filter(days_range, granularity, hours_range))
 		.select(
@@ -221,6 +250,57 @@ def prep_timeline(
 	)
 
 
+def prep_timeline_extent(
+	context: PlotContext,
+	days_range: tuple[int, int],
+	granularity: Granularity,
+	hours_range: tuple[int, int] | None = None,
+) -> tuple[str, str]:
+	"""The selected window's first and last instant, as naive wall-clock strings.
+
+	Read from ``padded_df`` with undefined pieces included, so a stretch nothing recorded -
+	a recording gap, or silence past the extrapolation limit - stays on the axis instead of
+	the axis shrinking to the bars drawn.
+	"""
+	return (
+		context.table("padded_df")
+		.lazy()
+		.filter(window_filter(days_range, granularity, hours_range))
+		.select(
+			(pl.col("datetime") - pl.col("time_spent")).min(),
+			pl.col("datetime").max().alias("end"),
+		)
+		.select(pl.all().dt.replace_time_zone(None).dt.to_string())
+		.collect()
+		.row(0)
+	)
+
+
+def prep_timeline_vertices(visits: pl.DataFrame, bar_vertices: int = 3) -> pl.DataFrame:
+	"""Each timeline bar as a polyline of wall-clock ``x`` strings.
+
+	Wall-clock strings, not epoch numbers: plotly reads a number on a date axis in the
+	browser's zone, shifting every bar by its UTC offset. A trailing None breaks the line
+	between bars. Hover snaps to the nearest vertex, so a long bar zoomed in on would hand the
+	tooltip to a neighbour's endpoint; interior vertices keep the nearest one on the bar under
+	the cursor.
+	"""
+	# ponytail: fixed count per bar; scale with duration if zoomed hover still mismatches.
+	return visits.select(
+		"position",
+		"animal_id",
+		x=pl.concat_list(
+			*(
+				(pl.col("start") + (pl.col("end") - pl.col("start")) * step / bar_vertices)
+				.dt.replace_time_zone(None)
+				.dt.to_string("%Y-%m-%d %H:%M:%S%.f")
+				for step in range(bar_vertices + 1)
+			),
+			pl.lit(None, pl.String),
+		),
+	)
+
+
 def prep_ranking_over_time(
 	context: PlotContext,
 	days_range: tuple[int, int],
@@ -230,7 +310,9 @@ def prep_ranking_over_time(
 
 	A match moves only its two animals, yet ``ranking`` repeats every animal's rating
 	after it. Only the rows where an animal's rating changes are kept, plus its last
-	one: the step line holds each rating until the next change anyway.
+	one: the step line holds each rating until the next change anyway. ``datetime`` is
+	naive wall-clock, as the event spans are; not epoch numbers, which plotly would read
+	in the browser's zone.
 	"""
 	return (
 		context.table("ranking")
@@ -247,6 +329,7 @@ def prep_ranking_over_time(
 			(pl.col("ordinal").diff().over("animal_id") != 0).fill_null(True)
 			| (pl.col("datetime") == pl.col("datetime").max().over("animal_id"))
 		)
+		.with_columns(pl.col("datetime").dt.replace_time_zone(None))
 		.collect(engine="in-memory")
 	)
 
@@ -356,15 +439,89 @@ def prep_polar(
 	)
 
 
+def _network_layout(
+	connections: pl.DataFrame,
+	weight: str,
+	directed: bool,
+	sizes: dict[str, float],
+	layout: Literal["spring", "circular"],
+	edge_cutoff: float,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+	"""Fit node positions to the edges that clear ``edge_cutoff``.
+
+	Edges weaker than ``edge_cutoff`` percent of the strongest are dropped before the
+	graph is built, so the layout and the edge scaling are fitted to what remains rather
+	than the full network with lines hidden.
+
+	Args:
+		connections: edge list as ``source``, ``target`` and the ``weight`` column.
+		weight: the column that weights the edges.
+		directed: whether an edge runs one way only.
+		sizes: node size per animal; its keys are the nodes, in drawing order.
+		layout: ``"spring"`` places nodes by edge weight, ``"circular"`` rings them
+			evenly so node positions stay comparable between plots.
+		edge_cutoff: percentage of the strongest edge an edge must reach to be kept.
+
+	Returns:
+		Nodes as ``animal_id, x, y, size``, and edges as ``source, target, weight,
+		x0, y0, x1, y1, scaled``. ``scaled`` is the weight z-scored and
+		squashed through a logistic, so it spans the cohort's own range; with no spread to
+		scale by it is 0.5 throughout.
+	"""
+	animals = list(sizes)
+	connections = connections.filter(pl.col(weight) >= pl.col(weight).max() * edge_cutoff / 100)
+	graph = nx.from_pandas_edgelist(
+		connections, create_using=nx.DiGraph if directed else nx.Graph, edge_attr=weight
+	)
+	graph.add_nodes_from(animals)
+
+	match layout:
+		case "spring":
+			pos = nx.spring_layout(
+				graph, k=0.1, iterations=50, seed=42, weight=weight, method="energy"
+			)
+		case "circular":
+			pos = nx.circular_layout(animals)
+
+	nodes = pl.DataFrame(
+		[(animal, *pos[animal], sizes[animal]) for animal in animals],
+		schema=["animal_id", "x", "y", "size"],
+		orient="row",
+	)
+
+	std = pl.col("weight").std(ddof=0)
+	z_score = (pl.col("weight") - pl.col("weight").mean()) / std
+	edges = pl.DataFrame(
+		[
+			(source, target, value, *pos[source], *pos[target])
+			for source, target, value in graph.edges(data=weight)
+		],
+		schema={
+			"source": pl.String,
+			"target": pl.String,
+			"weight": pl.Float64,
+			"x0": pl.Float64,
+			"y0": pl.Float64,
+			"x1": pl.Float64,
+			"y1": pl.Float64,
+		},
+		orient="row",
+	).with_columns(scaled=pl.when(std > 0).then(1 / (1 + (-z_score).exp())).otherwise(0.5))
+
+	return nodes, edges
+
+
 def prep_network_dominance(
 	context: PlotContext,
 	days_range: tuple[int, int],
 	granularity: Granularity,
+	layout: Literal["spring", "circular"],
+	edge_cutoff: float,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-	"""Return chasing edges and the latest ranking per animal."""
+	"""Return nodes sized by their latest ranking and chasing edges, laid out for drawing."""
 	animals = context.animal_ids
 	join_frame = pl.LazyFrame(
-		data=product(animals, animals),
+		data=permutations(animals, 2),
 		schema=[("target", pl.Enum(context.animal_ids)), ("source", pl.Enum(context.animal_ids))],
 	)
 
@@ -381,16 +538,18 @@ def prep_network_dominance(
 	)
 
 	diff = (pl.col(granularity) - days_range[-1]).abs()
-	nodes = (
+	ordinals = dict(
 		context.table("ranking")
 		.lazy()
 		.filter(diff == diff.min())  # last window unit that updated the rank
 		.group_by("animal_id")
 		.agg(pl.last("ordinal"))
 		.collect(engine="in-memory")
+		.iter_rows()
 	)
+	sizes = {animal: ordinals[animal] for animal in animals}
 
-	return connections, nodes
+	return _network_layout(connections, "chasings", True, sizes, layout, edge_cutoff)
 
 
 def _proportion_together(context: PlotContext, scope: Scope) -> pl.LazyFrame:
@@ -428,16 +587,18 @@ def prep_network_sociability(
 	context: PlotContext,
 	days_range: tuple[int, int],
 	granularity: Granularity,
-	scope: Scope = "cages",
-) -> pl.DataFrame:
-	"""Return edges weighted by the time each pair spent together."""
+	scope: Scope,
+	layout: Literal["spring", "circular"],
+	edge_cutoff: float,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+	"""Return evenly sized nodes and edges weighted by the time each pair spent together."""
 	animals = context.animal_ids
 	join_frame = pl.LazyFrame(
 		data=combinations(animals, 2),
 		schema=[("source", pl.Enum(context.animal_ids)), ("target", pl.Enum(context.animal_ids))],
 	)
 
-	return (
+	connections = (
 		_proportion_together(context, scope)
 		.filter(window_filter(days_range, granularity))
 		.group_by("animal_id", "animal_id_2")
@@ -452,6 +613,9 @@ def prep_network_sociability(
 		.fill_null(0)
 		.collect(engine="in-memory")
 	)
+	sizes = dict.fromkeys(animals, 30.0)
+
+	return _network_layout(connections, "proportion_together", False, sizes, layout, edge_cutoff)
 
 
 def prep_directed_heatmap(
@@ -938,7 +1102,7 @@ def prep_actogram(
 
 	Returns:
 		The grid as a single-facet :class:`Heatmap`, and one row per ``(event, day,
-		hour)`` cell an event bout touches - empty for a recording analysed before
+		hour)`` grid cell an event bout touches - empty for a recording analysed before
 		events existed.
 	"""
 	frame = (
@@ -972,6 +1136,7 @@ def prep_actogram(
 				pl.col("event").to_physical().cast(pl.Int64).alias("index"),
 				pl.col("day", "hour").cast(pl.Int64),
 			)
+			.filter(pl.col("day").is_in(days), pl.col("hour").is_in(hours))
 			.unique()
 		)
 
@@ -1045,9 +1210,13 @@ def prep_phenotype(
 	summed durations, never the mean of the per-hour ratios, which would weight a minute
 	in a cage the same as an hour. It is null for an animal with no cage time at all.
 
+	A rating's zero is arbitrary (mu - 3 sigma, often negative), so ``rating_size`` - the
+	marker area - grows from the cohort's lowest rating, offset so that animal still gets
+	a ninth of the top area.
+
 	Returns:
-		``animal_id``, ``subject_name``, ``visits``, ``gregariousness``, ``won`` and
-		``ordinal``, ordered by rating.
+		``animal_id``, ``subject_name``, ``visits``, ``gregariousness``, ``won``,
+		``ordinal`` and ``rating_size``, ordered by rating.
 	"""
 	tag = pl.col("animal_id").cast(pl.String)
 	activity = (
@@ -1057,6 +1226,8 @@ def prep_phenotype(
 		.with_columns(tag, pl.col("position").cast(pl.String))
 	)
 	in_cage, alone = pl.col("in_cage"), pl.col("alone")
+	ordinal = pl.col("ordinal")
+	span = ordinal.max() - ordinal.min()
 
 	social = (
 		activity.filter(pl.col("position").is_in(context.cages))
@@ -1096,7 +1267,10 @@ def prep_phenotype(
 		.join(won, on="animal_id", how="left")
 		.join(rating, on="animal_id", how="left")
 		.join(context.animals.lazy().select(tag, "subject_name"), on="animal_id", how="left")
-		.with_columns(pl.col("visits", "won").fill_null(0))
+		.with_columns(
+			pl.col("visits", "won").fill_null(0),
+			rating_size=pl.when(span > 0).then(ordinal - ordinal.min() + span / 8).otherwise(1),
+		)
 		.sort("ordinal", nulls_last=True)
 		.collect(engine="in-memory")
 	)

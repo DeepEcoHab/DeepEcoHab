@@ -346,7 +346,8 @@ The control bar.
   between them, such as genotype or sex.
 - **Group mean** draws one line per group instead of one per animal. It is available
   when the animals are coloured by a group, not by their tag.
-- **Events** shows or hides the shading that marks each event on the plots with a time axis.
+- **Events** shows or hides the event lanes above, and the marks inside, the plots with a
+  time axis.
 - **Cohort** lists the animals with their colour. Click an animal to write notes about it.
 
 A control the recording has no use for is hidden: **Phases** when the recording holds a
@@ -417,13 +418,14 @@ first read after the restart. All counts cover the analysed window only.
   one polar chart.
 - **Cohort**: the cohort table. Click an animal for its notes.
 - **Recording pulse**: the cohort's visits per hour, one row per day, with the hours of
-  each event outlined.
+  each event outlined and a lane per event above.
 - **Habitat occupancy**: the share of the cohort's time spent in each place.
 - **Cohort phenotype map**: one marker per animal, showing locomotion, sociality, chasing
   and rank at once.
 - **Events**, when the recording declares any: every bout on one strip across the recording,
   over its light and dark phases, then each event's bouts in a table with their day, phase,
-  start, end, duration and place. Click an event's name to fold its bouts away. The card is
+  start, end, duration and place. Each event has the colour its lane has on the plots.
+  Click an event's name to fold its bouts away. The card is
   drawn from the config alone, so it shows before the analysis has run.
 
 ```{figure} images/app/tab-overview.png
@@ -585,6 +587,20 @@ bar:
 - **Exposure, h** is the number of hours observed;
 - **Hourly mean** is the mean over hourly rows.
 
+Some plot types have a choice of how they are drawn, next to the plot's title once the
+plot is drawn:
+
+| plot type | choice | options |
+|---|---|---|
+| Bar | bar mode | Grouped (the default), Stacked, Relative, Overlaid |
+| Box | box mode | Grouped (the default), Overlaid |
+| Line, Area | line shape | Straight (the default), Smooth, Step hv, Step vh, Step hvh |
+
+Bar and box mode say what happens when several bars or boxes share a position, for
+example when Colour splits them: side by side, stacked, or drawn on top of each other.
+The step shapes hold a value until the next point, horizontally first (`hv`) or vertically
+first (`vh`), or change half way between points (`hvh`). The choice is saved with presets.
+
 ### Presets
 
 The built-in presets are a quick way to start. **Presets**, above the plot, lists them,
@@ -743,7 +759,8 @@ The Export dialog.
 - **Size**: 85, 114 or 174 mm wide, the usual journal column widths, or **Custom**. The
   width and height are in millimetres.
 - **Font size**, from 6 to 12 pt.
-- **Include**: the legend, the title, the event labels, and the plotted data as CSV, which
+- **Include**: the legend, the title, the **Events** (lanes, names and marks), and the plotted
+  data as CSV, which
   comes in one zip with the figure. A plot with several panels, such as a line plot and the
   totals beside it, gets one CSV per panel, numbered in drawing order.
 - **File name**.

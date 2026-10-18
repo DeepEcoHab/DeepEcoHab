@@ -86,7 +86,7 @@ To install from source:
 
 ```
 cd location_to_clone_to
-git clone https://github.com/KonradDanielewski/DeepEcoHab.git
+git clone https://github.com/DeepEcoHab/DeepEcoHab.git
 cd DeepEcoHab
 pip install ".[app]"
 ```
@@ -126,25 +126,27 @@ Every table, and what it holds, is described in the [antenna analysis guide](./t
 Plots are built from an analysed recording by name:
 
 ```python
-figure = deh.plot("activity-bar", project["recording_name"])
+figure = deh.to_figure(deh.plot("activity-bar", project["recording_name"]))
 figure.show()
 ```
 
-Every figure is a Plotly figure, so it can be modified further, saved as an interactive `.html` file with `figure.write_html()`, exported as an image in a preferred format and resolution for publication with `figure.write_image()`, or saved as JSON with `figure.write_json()` and reopened with `plotly.io.read_json()`. See [Plotting](./plotting.md) for every available plot and its options.
+`deh.plot` returns the plain dict Plotly draws; `deh.to_figure` turns it into a Plotly figure, which can be modified further, saved as an interactive `.html` file with `figure.write_html()`, exported as an image in a preferred format and resolution for publication with `figure.write_image()`, or saved as JSON with `figure.write_json()` and reopened with `plotly.io.read_json()`. See [Plotting](./plotting.md) for every available plot and its options.
 
 ## DeepEcoHab team
 
-DeepEcoHab is developed at the Nencki Institute of Experimental Biology in Warsaw:
+DeepEcoHab is developed at Ewelina Knapska's Laboratory of Emotions Neurobiology,
+Nencki Institute of Experimental Biology, Polish Academy of Sciences, Warsaw:
 
 - **Konrad Danielewski** ([@KonradDanielewski](https://github.com/KonradDanielewski)) - lead developer and maintainer
 - **Ula Włodkowska** ([@uwlodkowska](https://github.com/uwlodkowska))
 - **Marcin Lipiec** - principal investigator
+- **Ewelina Knapska** - head of the laboratory
 
 With contributions from [@Winiarsky](https://github.com/Winiarsky) and
 [@Brosnan-neuro](https://github.com/Brosnan-neuro).
 
 Found a bug or missing a feature? Open an issue at
-[github.com/KonradDanielewski/DeepEcoHab/issues](https://github.com/KonradDanielewski/DeepEcoHab/issues).
+[github.com/DeepEcoHab/DeepEcoHab/issues](https://github.com/DeepEcoHab/DeepEcoHab/issues).
 
 ## Citations
 
@@ -155,10 +157,10 @@ package {cite}`deepecohab` together with the paper introducing the Eco-HAB syste
 ```bibtex
 @software{deepecohab,
   title     = {{DeepEcoHab}: fast and intuitive data analysis platform for {EcoHab} experiments},
-  author    = {Danielewski, Konrad and Wlodkowska, Ula and Lipiec, Marcin},
+  author    = {Danielewski, Konrad and Wlodkowska, Ula and Lipiec, Marcin and Knapska, Ewelina},
   year      = {2026},
   publisher = {GitHub},
-  url       = {https://github.com/KonradDanielewski/DeepEcoHab}
+  url       = {https://github.com/DeepEcoHab/DeepEcoHab}
 }
 ```
 

@@ -54,13 +54,17 @@ def test_pairs_files_by_name(tmp_path):
 	[
 		(
 			["a.config.json"],
-			"no data file or diagnostic file - expected a.data.parquet and a.diagnostic.json "
-			"beside a.config.json",
+			(
+				"no data file or diagnostic file - expected a.data.parquet and a.diagnostic.json "
+				"beside a.config.json"
+			),
 		),
 		(
 			["a.config.json", "a.data.parquet"],
-			"no diagnostic file - expected a.diagnostic.json beside a.config.json and "
-			"a.data.parquet",
+			(
+				"no diagnostic file - expected a.diagnostic.json beside a.config.json and "
+				"a.data.parquet"
+			),
 		),
 		(
 			["a.data.parquet", "a.diagnostic.json"],
@@ -68,8 +72,10 @@ def test_pairs_files_by_name(tmp_path):
 		),
 		(
 			["a.diagnostic.json"],
-			"no config file or data file - expected a.config.json and a.data.parquet "
-			"beside a.diagnostic.json",
+			(
+				"no config file or data file - expected a.config.json and a.data.parquet "
+				"beside a.diagnostic.json"
+			),
 		),
 	],
 )

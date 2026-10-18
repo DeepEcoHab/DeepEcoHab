@@ -114,9 +114,12 @@ def test_four_cages_sit_on_one_circle():
 	radii = {round(math.hypot(x, y), 6) for x, y in places.values()}
 	assert len(radii) == 1
 	# First cage declared leads, top left, and the rest run clockwise from it.
-	assert places["C1"][0] < 0 and places["C1"][1] < 0
-	assert places["C2"][0] > 0 and places["C2"][1] < 0
-	assert places["C3"][0] > 0 and places["C3"][1] > 0
+	assert places["C1"][0] < 0
+	assert places["C1"][1] < 0
+	assert places["C2"][0] > 0
+	assert places["C2"][1] < 0
+	assert places["C3"][0] > 0
+	assert places["C3"][1] > 0
 
 
 def test_a_cage_off_the_ring_is_pushed_out_past_its_neighbour():

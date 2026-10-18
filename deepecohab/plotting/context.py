@@ -1,3 +1,4 @@
+import datetime as dt
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Final, Literal, get_args
@@ -46,6 +47,8 @@ class PlotContext:
 			:func:`~deepecohab.core.transforms.remove_tunnel_directionality`.
 		recording: the recording whose result parquets the tables are read from. A
 			context built by hand instead hands its tables over in ``_loaded``.
+		experiment_start: the instant experiment days are counted from, which places an
+			event inside its day; without it, events fill their whole days.
 	"""
 
 	animal_ids: list[str]
@@ -56,6 +59,7 @@ class PlotContext:
 	phase_range: tuple[int, int]
 	tunnels_map: dict[str, str]
 	recording: "Recording | None" = None
+	experiment_start: dt.datetime | None = None
 	_loaded: dict[str, pl.DataFrame] = field(default_factory=dict, repr=False)
 
 	@classmethod
@@ -78,6 +82,7 @@ class PlotContext:
 			days_range=timeline.days_range,
 			phase_range=timeline.phase_range,
 			tunnels_map=recording.layout.tunnels_map,
+			experiment_start=timeline.experiment_start,
 		)
 
 	@cached_property

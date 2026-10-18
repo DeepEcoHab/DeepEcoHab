@@ -182,7 +182,7 @@ def _topbar() -> html.Div:
 				[icon("moon", class_name="deh-moon"), icon("sun", class_name="deh-sun")],
 				id="theme-toggle",
 				className="deh-icon-btn",
-				**{"aria-label": "Toggle colour theme"},  # ty: ignore[invalid-argument-type]
+				**{"aria-label": "Toggle colour theme"},
 			),
 		],
 		className="deh-topbar",
@@ -373,7 +373,7 @@ def _register_callbacks(app: Dash) -> None:
 			"csv": bool(csv),
 			"filename": filename or "plot",
 		}
-		result = export_preview(source["figure"], source["title"], form)
+		result = export_preview(source["figure"], source["title"], form, source.get("data"))
 		label = [
 			icon("download", size=15),
 			f"Download {fmt.upper()}{' + CSV' if form['csv'] and result['has_csv'] else ''}",

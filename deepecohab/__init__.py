@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 		export_figure as export_figure,
 		fit_for_export as fit_for_export,
 		plot as plot,
+		to_figure as to_figure,
 	)
 
 __version__ = version("deepecohab")
@@ -33,6 +34,7 @@ _LAZY_EXPORTS = (
 	"export_figure",
 	"fit_for_export",
 	"plot",
+	"to_figure",
 )
 
 

@@ -58,7 +58,7 @@ EXPECTED_COLUMNS = {
 at = partial(strategies.at, tz=str(TZ))
 
 
-@pytest.fixture()
+@pytest.fixture
 def make_df():
 	"""Build a typed, zone-aware DataFrame from plain column dicts."""
 
