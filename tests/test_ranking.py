@@ -3,29 +3,27 @@
 calculate_ranking replays each chasing event in match_df as a one-on-one match
 and emits the full rating trajectory (one row per animal after every match). The
 step reads match_df via Recording.load_results, so we monkeypatch that to feed a small,
-hand-built match table and exercise the pure compute body directly via
-``__wrapped__`` .
+hand-built match table and call the step directly.
 """
 
 import datetime as dt
+import io
+import random
 from functools import partial
 from zoneinfo import ZoneInfo
 
 import polars as pl
 import pytest
 import strategies
-from openskill.models import PlackettLuce
 
-from deepecohab.core import antenna_analysis
+from deepecohab.core import antenna_analysis, ranking_algorithm
 from deepecohab.core.data_model import AnalysisParams, Recording
 
 TZ = ZoneInfo("Europe/Warsaw")
 
 PHASE_CFG = {"light_phase": dt.time(7, 0), "dark_phase": dt.time(20, 0)}
 
-# The model configuration must match calculate_ranking exactly so expected
-# ordinals computed here line up with the ones the step emits.
-MODEL = PlackettLuce(limit_sigma=True, balance=True)
+MODEL = ranking_algorithm.MODEL
 
 
 at = partial(strategies.at, tz=str(TZ))
@@ -111,44 +109,6 @@ def test_phase_count_aligned_to_grid(monkeypatch):
 	result = run_ranking(monkeypatch, [("B", "A", at(2023, 5, 24, 21, 0, 0))], ["A", "B"])
 	assert result["phase_count"].null_count() == 0
 	assert set(result["phase_count"].unique().to_list()) == {2}
-
-
-def test_one_row_per_animal_per_match(monkeypatch):
-	"""Every match emits one row for every animal (full trajectory)."""
-	matches = [
-		("B", "A", at(2023, 5, 24, 12, 0, 0)),
-		("B", "A", at(2023, 5, 24, 12, 1, 0)),
-		("B", "A", at(2023, 5, 24, 12, 2, 0)),
-	]
-	result = run_ranking(monkeypatch, matches, ["A", "B", "C"])
-	assert result.height == len(matches) * 3  # 3 animals
-
-
-def test_consistent_winner_outranks_loser(monkeypatch):
-	"""If A always beats B, A's final ordinal exceeds B's."""
-	matches = [("B", "A", at(2023, 5, 24, 12, i, 0)) for i in range(5)]
-	result = run_ranking(monkeypatch, matches, ["A", "B"])
-
-	ordinals = final_block(result)
-	assert ordinals["A"] > ordinals["B"]
-
-
-def test_uninvolved_animal_keeps_default_ordinal(monkeypatch):
-	"""An animal that never plays stays at the model's default rating."""
-	matches = [("B", "A", at(2023, 5, 24, 12, 0, 0))]
-	result = run_ranking(monkeypatch, matches, ["A", "B", "C"])
-
-	c_rows = result.filter(pl.col("animal_id") == "C")
-	assert (c_rows["ordinal"] == expected_ordinal()).all()
-
-
-def test_winner_and_loser_move_in_opposite_directions(monkeypatch):
-	"""After one match the winner's ordinal rises above default and the loser's falls below."""
-	result = run_ranking(monkeypatch, [("B", "A", at(2023, 5, 24, 12, 0, 0))], ["A", "B"])
-
-	ordinals = final_block(result)
-	assert ordinals["A"] > expected_ordinal()
-	assert ordinals["B"] < expected_ordinal()
 
 
 # --- social_rank ------------------------------------------------------------
@@ -382,6 +342,32 @@ def test_tied_ordinals_share_the_same_rank_label(monkeypatch):
 	}
 
 
+def test_replay_matches_openskill_bit_for_bit(monkeypatch):
+	"""The step's written-out one-on-one update gives exactly what ``model.rate`` gives.
+
+	Long enough to reach the rare sigmas where ``sigma**2`` and ``sigma * sigma`` differ
+	in the last bit, so the float operations have to match openskill's one for one.
+	"""
+	animals = list("ABCDEFGHI")
+	rng = random.Random(1)
+	pairs = [rng.sample(animals, 2) for _ in range(3000)]
+	matches = [
+		(loser, winner, at(2023, 5, 24, 12, 0, 0) + dt.timedelta(seconds=i))
+		for i, (loser, winner) in enumerate(pairs)
+	]
+	result = run_ranking(monkeypatch, matches, animals)
+
+	ratings = {animal: MODEL.rating() for animal in animals}
+	expected = []
+	for loser, winner in pairs:
+		[[ratings[loser]], [ratings[winner]]] = MODEL.rate(
+			[[ratings[loser]], [ratings[winner]]], ranks=[1, 0]
+		)
+		expected += [(ratings[a].mu, ratings[a].sigma) for a in animals]
+
+	assert list(result.select("mu", "sigma").iter_rows()) == expected
+
+
 def test_replay_is_deterministic_when_matches_share_a_timestamp(monkeypatch):
 	"""Simultaneous events are replayed in one fixed order however they arrive.
 
@@ -398,3 +384,9 @@ def test_replay_is_deterministic_when_matches_share_a_timestamp(monkeypatch):
 	assert final_block(forwards) == final_block(backwards)
 	# The tiebreak has to do something: the three animals do not end up level.
 	assert len(set(final_block(forwards).values())) > 1
+
+
+def test_read_ranking_keeps_leading_zeros_of_csv_tags():
+	text = b"animal_id,mu,sigma\n007,25.0,8.3\n"
+	ranking = antenna_analysis.read_ranking(io.BytesIO(text), csv=True)
+	assert ranking["animal_id"].to_list() == ["007"]

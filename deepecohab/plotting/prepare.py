@@ -5,11 +5,12 @@ from dataclasses import dataclass
 from itertools import combinations, permutations, product
 from typing import Literal
 
-import networkx as nx
 import numpy as np
 import polars as pl
+lazy import networkx as nx
 
-from deepecohab.core.data_model import Layout
+from deepecohab.core import grids
+from deepecohab.core.data_model import CALENDAR_COLUMNS, Layout
 from deepecohab.plotting import durations
 from deepecohab.plotting.context import Granularity, PlotContext, Scope
 
@@ -162,9 +163,10 @@ def prep_timeline(
 ) -> pl.DataFrame:
 	"""Every animal's position intervals within the selected window, as timeline bars.
 
-	Reads ``padded_df``, whose minute pieces are dated by where they start, so a visit that
-	began before the window but runs into it still draws from the window's edge. A piece
-	ran from ``datetime - time_spent`` to ``datetime``; neighbours merge into bars below.
+	Reads ``padded_df``, whose visits are cut where each cell of the time grid begins and
+	whose pieces are dated by where they start, so a visit that began before the window
+	but runs into it still draws from the window's edge. A piece ran from ``datetime - time_spent``
+	to ``datetime``; neighbours merge into bars below.
 
 	A week holds hundreds of thousands of registrations, nearly all narrower than a
 	pixel, so the span on show - the window, or ``x_range`` once zoomed in - is cut into
@@ -371,13 +373,23 @@ def prep_ranking_distribution(
 		-0.5 * ((pl.col("ranking") - pl.col("mu")) / pl.col("sigma")) ** 2
 	).exp()
 
-	return (
+	latest = (
 		context.table("ranking")
 		.lazy()
 		.filter(window_filter(days_range, granularity))
 		.group_by("animal_id")
 		.agg(pl.last("mu"), pl.last("sigma"))
-		.join(pl.LazyFrame({"ranking": np.arange(-10, 50, 0.1)}), how="cross")
+		.collect(engine="in-memory")
+	)
+	# Four sigma either side of the outermost rating: one-sided chasing drives ratings
+	# well past any fixed axis.
+	low = latest.select((pl.col("mu") - 4 * pl.col("sigma")).min()).item()
+	high = latest.select((pl.col("mu") + 4 * pl.col("sigma")).max()).item()
+	grid = np.arange(math.floor(low), math.ceil(high), 0.1) if latest.height else np.empty(0)
+
+	return (
+		latest.lazy()
+		.join(pl.LazyFrame({"ranking": grid}, schema={"ranking": pl.Float64}), how="cross")
 		.with_columns(pdf_expression.alias("probability_density"))
 		.select("animal_id", "ranking", "probability_density")
 		.sort("animal_id")
@@ -511,6 +523,23 @@ def _network_layout(
 	return nodes, edges
 
 
+def _final_ratings(
+	context: PlotContext, days_range: tuple[int, int], granularity: Granularity
+) -> pl.LazyFrame:
+	"""Each animal's last ``ordinal`` up to the window's end, as ``animal_id`` and ``ordinal``.
+
+	Ratings carry over from match to match, so the window's start is ignored; its end is
+	not, or a rating earned after the window would stand in for the one at its close.
+	"""
+	return (
+		context.table("ranking")
+		.lazy()
+		.filter(pl.col(granularity) <= days_range[1])
+		.group_by("animal_id")
+		.agg(pl.last("ordinal"))
+	)
+
+
 def prep_network_dominance(
 	context: PlotContext,
 	days_range: tuple[int, int],
@@ -537,17 +566,9 @@ def prep_network_dominance(
 		.collect(engine="in-memory")
 	)
 
-	diff = (pl.col(granularity) - days_range[-1]).abs()
-	ordinals = dict(
-		context.table("ranking")
-		.lazy()
-		.filter(diff == diff.min())  # last window unit that updated the rank
-		.group_by("animal_id")
-		.agg(pl.last("ordinal"))
-		.collect(engine="in-memory")
-		.iter_rows()
-	)
-	sizes = {animal: ordinals[animal] for animal in animals}
+	ordinals = dict(_final_ratings(context, days_range, granularity).collect().iter_rows())
+	# An animal with no rating yet (no chasing up to the window's end) is drawn unsized.
+	sizes = {animal: ordinals.get(animal, 0.0) for animal in animals}
 
 	return _network_layout(connections, "chasings", True, sizes, layout, edge_cutoff)
 
@@ -562,13 +583,26 @@ def _proportion_together(context: PlotContext, scope: Scope) -> pl.LazyFrame:
 	exactly with the stored one at ``scope="cages"``.
 	"""
 	phase_seconds = pl.col("duration").dt.total_seconds(fractional=True)
+	keys = ["phase", "day", "phase_count", "animal_id", "animal_id_2"]
+	animal = pl.Enum(context.animal_ids)
+	pairs = pl.LazyFrame(
+		combinations(context.animal_ids, 2),
+		schema=[("animal_id", animal), ("animal_id_2", animal)],
+		orient="row",
+	)
+	phases = context.table("time_grid").lazy().select("phase", "day", "phase_count").unique()
 
-	return (
+	together = (
 		context.table("pairwise_meetings")
 		.lazy()
 		.filter(pl.col("position").is_in(context.scope_positions(scope)))
-		.group_by("phase", "day", "phase_count", "animal_id", "animal_id_2")
+		.group_by(keys)
 		.agg(pl.sum("time_together"))
+	)
+
+	# pairwise_meetings leaves out the phases a pair never met in, which are zeros here.
+	return (
+		grids.zero_filled(phases.join(pairs, how="cross"), together, keys)
 		.join(context.table("phase_durations").lazy(), on=["phase_count", "phase"], how="left")
 		.select(
 			"phase",
@@ -650,16 +684,28 @@ def prep_directed_heatmap(
 		case "mean":
 			agg_func = pl.mean(value).round(2).alias("mean")
 
-	frame = (
+	window = (
+		pl.col("phase").is_in(list(phase_type)),
+		window_filter(days_range, granularity, hours_range),
+	)
+	pairs = pl.LazyFrame(
+		permutations(animals, 2),
+		schema=[(column, pl.Enum(context.animal_ids)), (row, pl.Enum(context.animal_ids))],
+		orient="row",
+	)
+	units = context.table("time_grid").lazy().filter(*window).select(granularity).unique()
+
+	per_unit = (
 		context.table(table)
 		.lazy()
-		.sort(row, column)
-		.filter(
-			pl.col("phase").is_in(list(phase_type)),
-			window_filter(days_range, granularity, hours_range),
-		)
+		.filter(*window)
 		.group_by(granularity, column, row)
 		.agg(pl.sum(value))
+	)
+
+	# The table may leave out the units a pair had no events in; a mean counts them as zeros.
+	frame = (
+		grids.zero_filled(units.join(pairs, how="cross"), per_unit, [granularity, column, row])
 		.group_by(column, row, maintain_order=True)
 		.agg(agg_func)
 		.join(join_frame, on=[column, row], how="right", maintain_order="right")
@@ -906,12 +952,32 @@ def prep_pairwise_sociability(
 		],
 	)
 
+	window = (
+		pl.col("phase").is_in(list(phase_type)),
+		window_filter(days_range, granularity, hours_range),
+	)
+	selected = set(animals)
+	stored_pairs = pl.LazyFrame(
+		[
+			(position, first, second)
+			for position in positions
+			for first, second in combinations(context.animal_ids, 2)
+			if first in selected and second in selected
+		],
+		schema=[
+			("position", pl.Categorical()),
+			("animal_id", pl.Enum(context.animal_ids)),
+			("animal_id_2", pl.Enum(context.animal_ids)),
+		],
+		orient="row",
+	)
+	cells = context.table("time_grid").lazy().filter(*window).join(stored_pairs, how="cross")
+	meetings = context.table("pairwise_meetings").lazy().filter(*window)
+
+	# pairwise_meetings leaves out the cells a pair never met in; a mean counts them as zeros.
 	frame = (
-		context.table("pairwise_meetings")
-		.lazy()
-		.filter(
-			pl.col("phase").is_in(list(phase_type)),
-			window_filter(days_range, granularity, hours_range),
+		grids.zero_filled(
+			cells, meetings, [*CALENDAR_COLUMNS, "position", "animal_id", "animal_id_2"]
 		)
 		.group_by(["animal_id", "animal_id_2", "position"], maintain_order=True)
 		.agg(
@@ -1208,7 +1274,8 @@ def prep_phenotype(
 
 	Sociality is ``1 - time_alone / time_in_position`` over the cages - a ratio of the
 	summed durations, never the mean of the per-hour ratios, which would weight a minute
-	in a cage the same as an hour. It is null for an animal with no cage time at all.
+	in a cage the same as an hour. It is null for an animal with no cage time at all. The
+	rating is the one at the window's end, see :func:`_final_ratings`.
 
 	A rating's zero is arbitrary (mu - 3 sigma, often negative), so ``rating_size`` - the
 	marker area - grows from the cohort's lowest rating, offset so that animal still gets
@@ -1253,14 +1320,7 @@ def prep_phenotype(
 		.agg(pl.sum("chasings").alias("won"))
 		.select(pl.col("chaser").cast(pl.String).alias("animal_id"), "won")
 	)
-	rating = (
-		context.table("ranking")
-		.lazy()
-		.sort("datetime")
-		.group_by("animal_id")
-		.last()
-		.select(tag, "ordinal")
-	)
+	rating = _final_ratings(context, days_range, granularity).select(tag, "ordinal")
 
 	return (
 		social.join(visits, on="animal_id", how="left")

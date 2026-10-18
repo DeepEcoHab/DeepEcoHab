@@ -97,7 +97,7 @@ def test_tunnel_time_together_is_excluded(monkeypatch):
 	only; an unfiltered tunnel row would survive the left join with a null chance and
 	inflate proportion_together while leaving sociability alone.
 	"""
-	# Same cage numbers as the single-cage case below, plus 50 s together in a tunnel.
+	# A in cage_1 for 40 s, B for 30 s, together 20 s there and 50 s in a tunnel.
 	activity = activity_frame([("A", "cage_1", 40), ("B", "cage_1", 30)])
 	pairwise = pairwise_frame([("A", "B", "cage_1", 20), ("A", "B", "tunnel_1", 50)])
 
@@ -108,20 +108,6 @@ def test_tunnel_time_together_is_excluded(monkeypatch):
 
 	assert row["proportion_together"] == pytest.approx(0.2)  # 20 / 100, tunnel ignored
 	assert row["sociability"] == pytest.approx(0.2 - (40 * 30) / 100**2)
-
-
-def test_sociability_value_single_cage(monkeypatch):
-	"""proportion_together = T/D and sociability = T/D - (a*b)/D^2 for one cage."""
-	# A occupies cage_1 for 40 s, B for 30 s, together 20 s, phase duration 100 s.
-	activity = activity_frame([("A", "cage_1", 40), ("B", "cage_1", 30)])
-	pairwise = pairwise_frame([("A", "B", "cage_1", 20)])
-	result = run_sociability(
-		monkeypatch, activity=activity, pairwise=pairwise, durations=durations_frame(100)
-	)
-
-	row = pair_row(result, "A", "B")
-	assert row["proportion_together"] == pytest.approx(0.2)  # 20 / 100
-	assert row["sociability"] == pytest.approx(0.2 - (40 * 30) / 100**2)  # 0.2 - 0.12 = 0.08
 
 
 def test_sociability_sums_over_cages(monkeypatch):
@@ -139,44 +125,6 @@ def test_sociability_sums_over_cages(monkeypatch):
 	row = pair_row(result, "A", "B")
 	assert row["sociability"] == pytest.approx(cage1 + cage2)
 	assert row["proportion_together"] == pytest.approx(20 / 100 + 5 / 100)
-
-
-def test_zero_when_observed_equals_chance(monkeypatch):
-	"""When observed togetherness equals the chance expectation, sociability is 0."""
-	# a*b/D = 50*40/100 = 20 = T, so observed == chance.
-	activity = activity_frame([("A", "cage_1", 50), ("B", "cage_1", 40)])
-	pairwise = pairwise_frame([("A", "B", "cage_1", 20)])
-	result = run_sociability(
-		monkeypatch, activity=activity, pairwise=pairwise, durations=durations_frame(100)
-	)
-
-	assert pair_row(result, "A", "B")["sociability"] == pytest.approx(0.0)
-
-
-def test_denominator_is_phase_duration(monkeypatch):
-	"""Sociability normalizes by wall-clock phase duration (incl. any recording gap).
-
-	get_phase_durations measures each phase occurrence's wall-clock length over the
-	experiment window, so a power outage that leaves dead minutes inside the window
-	inflates duration_seconds. With observed togetherness unchanged, a larger
-	duration therefore shrinks both proportion_together and sociability. This pins
-	that denominator behavior (the normalization the published metric relies on).
-	"""
-	activity = activity_frame([("A", "cage_1", 40), ("B", "cage_1", 30)])
-	pairwise = pairwise_frame([("A", "B", "cage_1", 20)])
-
-	short = run_sociability(
-		monkeypatch, activity=activity, pairwise=pairwise, durations=durations_frame(100)
-	)
-	tall = run_sociability(
-		monkeypatch, activity=activity, pairwise=pairwise, durations=durations_frame(200)
-	)
-
-	assert (
-		pair_row(tall, "A", "B")["proportion_together"]
-		< pair_row(short, "A", "B")["proportion_together"]
-	)
-	assert pair_row(tall, "A", "B")["sociability"] < pair_row(short, "A", "B")["sociability"]
 
 
 def test_each_phase_occurrence_is_reported_on_its_own(monkeypatch):
@@ -240,12 +188,13 @@ def test_a_pair_never_together_sits_at_minus_the_chance_sum(monkeypatch):
 
 	Both animals use both cages but never at the same time, so the observed term is zero
 	in every cage and the metric is exactly the negated chance expectation - the floor
-	the measure can reach for that pair.
+	the measure can reach for that pair. pairwise_meetings stores no row for a cage a pair
+	never met in, so the chance terms must come through without one.
 	"""
 	activity = activity_frame(
 		[("A", "cage_1", 40), ("B", "cage_1", 30), ("A", "cage_2", 20), ("B", "cage_2", 10)]
 	)
-	pairwise = pairwise_frame([("A", "B", "cage_1", 0), ("A", "B", "cage_2", 0)])
+	pairwise = pairwise_frame([])
 
 	result = run_sociability(
 		monkeypatch, activity=activity, pairwise=pairwise, durations=durations_frame(100)

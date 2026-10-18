@@ -31,6 +31,7 @@ from pydantic import ValidationError
 from deepecohab import AnalysisParams, Project, Recording
 from deepecohab.app import components, services
 from deepecohab.app.components import icon, notify
+from deepecohab.core.antenna_analysis import read_ranking
 
 dash.register_page(__name__, path="/", name="Projects", order=0, icon="folders")
 
@@ -76,6 +77,8 @@ layout = html.Div(
 				"chasing_time_window": list(_DEFAULTS.chasing_time_window),
 			},
 		),
+		dcc.Store(id="run-id"),
+		dcc.Interval(id="run-tick", interval=1000, disabled=True),
 		dcc.Store(id="run-progress"),
 		dcc.Store(id="run-active", data=False),
 		dcc.Store(id="run-failed", data={}),
@@ -501,9 +504,8 @@ def _table_cell(project: dict) -> html.Span | html.Div:
 
 
 def _running_badge(running: list) -> html.Span:
-	steps, total, building = running
-	building = html.Span(building or "done", className="deh-mono")
-	return _badge("run", "loader-2", f"{steps}/{total} · ", building, spin=True)
+	steps, total = running
+	return _badge("run", "loader-2", f"{steps}/{total}", spin=True)
 
 
 def _status(recording: dict, running: list | None, failure: str | None) -> html.Span:
@@ -960,11 +962,10 @@ def _render_projects(paths, search, failed, _written, active, progress, selectio
 	query = (search or "").strip().lower()
 	selected = {tuple(key) for key in selection}
 	rows = [
-		row
-		for location in paths
-		for row in _project_rows(
+		*_project_rows(
 			services.project_summary(location), query, expanded, selected, progress, failed
 		)
+		for location in paths
 	]
 	if not rows:
 		empty = (
@@ -1003,19 +1004,12 @@ def _render_projects(paths, search, failed, _written, active, progress, selectio
 	Input("selection", "data"),
 	Input("run-progress", "data"),
 	Input("run-active", "data"),
-	State("overwrite", "checked"),
 )
-def _render_actionbar(selection, progress, active, overwrite):
-	# The run's first report waits on its worker spawning; paint step 0 the moment it starts.
-	# Here because a running background callback holds back callbacks fed by its outputs,
-	# like the table's, while this one still runs.
-	if active and progress is None:
-		progress = services.pending_progress(selection, overwrite)
-		set_props("run-progress", {"data": progress})
+def _render_actionbar(selection, progress, active):
 	if active and progress:
-		jobs = [job for recordings in progress.values() for job in recordings.values()]
-		done = sum(steps for steps, _, _ in jobs)
-		total = sum(steps for _, steps, _ in jobs)
+		jobs = [*recordings.values() for recordings in progress.values()]
+		done = sum(steps for steps, _ in jobs)
+		total = sum(steps for _, steps in jobs)
 		noun = "recording" if len(jobs) == 1 else "recordings"
 		message = [
 			icon("loader-2", class_name="deh-spin"),
@@ -1115,19 +1109,14 @@ def _add_project(_open, _cancel, _submit, _enter, value, paths):
 	if ctx.triggered_id == "add-cancel":
 		return False, no_update, None
 
-	folder = Path((value or "").strip().strip('"'))
-	if folder.name == Project.MANIFEST:
-		folder = folder.parent
-	if not str(folder).strip(". "):
+	value = (value or "").strip().strip('"')
+	if not value.strip(". "):
 		return no_update, no_update, "Enter the folder that holds project.json."
-	if not (folder.expanduser() / Project.MANIFEST).is_file():
-		error = (
-			f"No project.json in {folder}. Pick the folder that holds it; it sits next to one "
-			"folder per recording."
-		)
-		return no_update, no_update, error
+	try:
+		location = str(Project.locate(Path(value)))
+	except FileNotFoundError as exc:
+		return no_update, no_update, str(exc)
 
-	location = str(folder.expanduser().resolve())
 	project = services.project_summary(location)
 	if location in paths:
 		return no_update, no_update, f"{project['name']} is already in your list."
@@ -1172,6 +1161,9 @@ def _create_project(_open, _cancel, _submit, name, experimenter, folder, descrip
 	location = Path((folder or "").strip().strip('"') or _PROJECTS_HOME).expanduser()
 	try:
 		project = Project.create(name, experimenter, location, (description or "").strip())
+	except ValueError:
+		error = "A folder name: no / or \\, and not only dots."
+		return no_update, *unchanged, error, None, None
 	except FileExistsError:
 		error = "This folder already holds a project; open it with Add project."
 		return no_update, *unchanged, None, None, error
@@ -1361,7 +1353,7 @@ def _replace_recordings(pending, _skip, _confirm, queue, apply_to_all):
 
 	# Every name is decided: add the ones to replace, then let go of the staged files.
 	project = services.load_project(queue["location"])
-	files = [path for name in queue["replace"] for path in queue["existing"][name]]
+	files = [*queue["existing"][name] for name in queue["replace"]]
 	report = project.add_recordings(files, overwrite=True) if files else None
 	shutil.rmtree(queue["staging"], ignore_errors=True)
 
@@ -1411,14 +1403,22 @@ def _remove_recording(event, bulk_event, _cancel, _delist, _delete, target, sele
 	location, names = target
 	delete_files = ctx.triggered_id == "remove-delete"
 	project = services.load_project(location)
+	removed = []
 	for name in names:
-		project.remove_recording(name, delete_files=delete_files)
-	what = names[0] if len(names) == 1 else f"{len(names)} recordings"
-	notify(
-		"info",
-		f"Deleted {what} and the files" if delete_files else f"Delisted {what}; the files stay",
-	)
-	kept = [key for key in selection if key[0] != location or key[1] not in names]
+		try:
+			project.remove_recording(name, delete_files=delete_files)
+		except OSError as exc:  # a file in use; the recording stays listed
+			reason = exc.strerror or exc
+			notify("bad", f"Could not delete {name}: {reason}. Close what uses it and retry.")
+		else:
+			removed.append(name)
+	if removed:
+		what = removed[0] if len(removed) == 1 else f"{len(removed)} recordings"
+		notify(
+			"info",
+			f"Deleted {what} and the files" if delete_files else f"Delisted {what}; the files stay",
+		)
+	kept = [key for key in selection if key[0] != location or key[1] not in removed]
 	return False, no_update, no_update, time.time(), kept
 
 
@@ -1489,13 +1489,9 @@ def _prev_rankings(_open, contents, _clear, filenames, selection):
 				problems.append(f"{filename}: no selected recording is named {stem}.")
 				continue
 
-			raw = base64.b64decode(blob.split(",", 1)[1])
+			raw = io.BytesIO(base64.b64decode(blob.split(",", 1)[1]))
 			try:
-				frame = (
-					pl.read_csv(io.BytesIO(raw), schema_overrides={"animal_id": pl.String})
-					if filename.lower().endswith(".csv")
-					else pl.read_parquet(io.BytesIO(raw))
-				)
+				frame = read_ranking(raw, csv=filename.lower().endswith(".csv"))
 				for recording in targets:
 					recording.set_prev_ranking(frame)
 			except Exception as exc:
@@ -1554,36 +1550,53 @@ clientside_callback(
 )
 
 
-callback(
-	Output("run-failed", "data"),
-	Output("selection", "data", allow_duplicate=True),
+@callback(
+	Output("run-id", "data"),
+	Output("run-progress", "data"),
+	Output("run-active", "data"),
+	Output("run-tick", "disabled"),
+	Output("run-start", "disabled"),
 	Input("run-start", "n_clicks"),
 	State("selection", "data"),
 	State("analysis-params", "data"),
 	State("overwrite", "checked"),
 	State("use-prev-ranking", "checked"),
-	State("run-failed", "data"),
-	background=True,
-	progress=Output("run-progress", "data"),
-	running=[
-		(Output("run-start", "disabled"), True, False),
-		(Output("run-active", "data"), True, False),
-	],
-	prevent_initial_call=True,
-)(services.run_analysis)
-
-clientside_callback(
-	ClientsideFunction("deh", "resetProgress"),
-	Output("run-progress", "data", allow_duplicate=True),
-	Input("run-start", "n_clicks"),
 	prevent_initial_call=True,
 )
+def _start_run(_clicks, selection, params, overwrite, use_prev_ranking):
+	run_id = services.start_run(selection, params, overwrite, use_prev_ranking)
+	if run_id is None:
+		raise PreventUpdate
+	return run_id, services.run_progress(run_id), True, False, True
 
 
-@callback(Input("run-cancel", "n_clicks"), State("selection", "data"), prevent_initial_call=True)
-def _cancel_run(_clicks, selection):
-	for location in {location for location, _ in selection}:
-		services.request_cancel(location)
+@callback(
+	Output("run-id", "data", allow_duplicate=True),
+	Output("run-progress", "data", allow_duplicate=True),
+	Output("run-active", "data", allow_duplicate=True),
+	Output("run-tick", "disabled", allow_duplicate=True),
+	Output("run-start", "disabled", allow_duplicate=True),
+	Output("run-failed", "data"),
+	Output("selection", "data", allow_duplicate=True),
+	Input("run-tick", "n_intervals"),
+	State("run-id", "data"),
+	State("run-progress", "data"),
+	State("run-failed", "data"),
+	prevent_initial_call=True,
+)
+def _poll_run(_ticks, run_id, shown, failed):
+	if not run_id:
+		raise PreventUpdate
+	if (finished := services.finish_run(run_id, failed)) is None:
+		progress = services.run_progress(run_id)
+		return (no_update, no_update if progress == shown else progress, *[no_update] * 5)
+	return None, no_update, False, True, False, *finished
+
+
+@callback(Input("run-cancel", "n_clicks"), State("run-id", "data"), prevent_initial_call=True)
+def _cancel_run(_clicks, run_id):
+	if run_id:
+		services.cancel_run(run_id)
 	notify("info", "Cancelling: recordings in flight finish their current step first.")
 
 

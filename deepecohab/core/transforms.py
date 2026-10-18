@@ -2,9 +2,22 @@ import datetime as dt
 from collections.abc import Sequence
 
 import polars as pl
+import polars.selectors as cs
 
 from deepecohab.core import grids
 from deepecohab.core.data_model import Boundary, Layout, Recording
+
+
+def csv_ready(frame: pl.DataFrame) -> pl.DataFrame:
+	"""``frame`` with every Duration column in seconds and every Enum/Categorical as a string.
+
+	CSV has neither type, so a plain ``write_csv`` would otherwise dump raw microsecond
+	integers for a duration and silently drop a category's declared order.
+	"""
+	return frame.with_columns(
+		cs.duration().dt.total_microseconds() / 1_000_000,
+		(cs.enum() | cs.categorical()).cast(pl.String),
+	)
 
 
 def calculate_time_spent(frame: pl.LazyFrame) -> pl.LazyFrame:
@@ -226,6 +239,117 @@ def occupancy_spans(intervals: pl.LazyFrame) -> pl.LazyFrame:
 	)
 
 
+def contiguous_run_id(start: str, end: str, *partition: str) -> pl.Expr:
+	"""Expression numbering runs of back-to-back intervals within each partition.
+
+	A row starting after the previous row's end opens a new run; one starting at or
+	before it continues the run, so an overlap counts as back-to-back. Rows must be
+	sorted by ``start`` within each partition.
+	"""
+	return (pl.col(start) > pl.col(end).shift(1)).fill_null(True).cum_sum().over(partition)
+
+
+def merge_contiguous_stays(intervals: pl.LazyFrame) -> pl.LazyFrame:
+	"""Frame of each animal's back-to-back intervals in one position merged into one stay.
+
+	A zero-length interval is dropped first: nothing can happen in it, and left in it
+	would split the stay it sits inside.
+
+	Args:
+		intervals: table with ``animal_id``, ``position`` and the ``start``/``end``
+			bounds :func:`add_occupancy_bounds` adds.
+
+	Returns:
+		One row per stay, with ``animal_id``, ``position``, ``start`` and ``end``.
+	"""
+	# Overlapping counts as back-to-back: registrations never overlap, but intervals
+	# rounded to the microsecond can, and two stays of one animal would meet each other's
+	# partners twice over the overlap.
+	return (
+		intervals.filter(pl.col("end") > pl.col("start"))
+		.sort("animal_id", "position", "start")
+		.with_columns(contiguous_run_id("start", "end", "animal_id", "position").alias("__stay"))
+		.group_by("animal_id", "position", "__stay")
+		.agg(pl.col("start").min(), pl.col("end").max())
+		.drop("__stay")
+	)
+
+
+def overlapping_stays(stays: pl.LazyFrame) -> pl.LazyFrame:
+	"""Frame of every meeting: two animals' stays overlapping in one position.
+
+	A meeting runs from the later arrival to the earlier departure, so it is one unbroken
+	stretch of co-presence however many other animals come and go during it, and the
+	result holds one row per meeting rather than one per pair and moment.
+
+	A sweep rather than an overlap join: with the stays sorted by position and start,
+	every stay that starts before another ends, and after it starts, overlaps it, so one
+	``search_sorted`` over a composite ``(position, time)`` key bounds each stay's
+	partners and no pair that fails to overlap is ever formed. Row order is unspecified.
+
+	Args:
+		stays: :func:`merge_contiguous_stays` output.
+
+	Returns:
+		One row per meeting, with ``position``, ``animal_id`` before ``animal_id_2``,
+		``start`` and ``end``.
+	"""
+	collected = stays.collect()
+	if collected.is_empty():
+		return collected.lazy().select(
+			"position",
+			"animal_id",
+			pl.col("animal_id").alias("animal_id_2"),
+			"start",
+			"end",
+		)
+
+	origin = collected["start"].min()
+	# One position per block of the key, wide enough that no time spills into the next.
+	block = collected.select(
+		(pl.col("end").max() - pl.col("start").min()).dt.total_microseconds() + 1
+	).item()
+
+	def key(column: str) -> pl.Expr:
+		return pl.col("position").to_physical().cast(pl.Int64) * block + (
+			(pl.col(column) - origin).dt.total_microseconds()
+		)
+
+	ordered = collected.sort(pl.col("position").to_physical(), "start").with_row_index("index")
+	ordered = ordered.with_columns(key("start").alias("__start_key"), key("end").alias("__end_key"))
+	# Stays at or after this one in start order that begin before it ends.
+	stop = ordered["__start_key"].search_sorted(ordered["__end_key"], side="left")
+	partners = ordered.select(
+		pl.col("index").alias("partner"),
+		pl.col("animal_id").alias("animal_id_2"),
+		pl.col("start").alias("partner_start"),
+		pl.col("end").alias("partner_end"),
+	)
+
+	return (
+		ordered.lazy()
+		.with_columns(pl.int_ranges(pl.col("index") + 1, stop).alias("partner"))
+		.explode("partner")
+		.drop_nulls("partner")
+		.join(partners.lazy(), on="partner")
+		.filter(pl.col("animal_id") != pl.col("animal_id_2"))
+		.select(
+			"position",
+			pl.when(pl.col("animal_id") < pl.col("animal_id_2"))
+			.then("animal_id")
+			.otherwise("animal_id_2")
+			.alias("animal_id"),
+			pl.when(pl.col("animal_id") < pl.col("animal_id_2"))
+			.then("animal_id_2")
+			.otherwise("animal_id")
+			.alias("animal_id_2"),
+			# The partner starts no earlier, so it is the later arrival.
+			pl.col("partner_start").alias("start"),
+			pl.min_horizontal("end", "partner_end").alias("end"),
+		)
+	)
+
+
 def cooccupancy_spans(intervals: pl.LazyFrame) -> pl.LazyFrame:
 	"""Frame of every span of time two animals shared a position, one row per pair.
 
@@ -240,8 +364,7 @@ def cooccupancy_spans(intervals: pl.LazyFrame) -> pl.LazyFrame:
 
 	Returns:
 		One row per span and pair, with ``position``, ``time``, ``end``, ``animal_id``,
-		``animal_id_2``, ``is_new`` marking the span that opens a meeting, and
-		``meeting_id`` numbering meetings within the pair and position.
+		``animal_id_2`` and ``meeting_id`` numbering meetings within the pair and position.
 	"""
 	present = occupancy_spans(intervals).filter(pl.col("animals_present") >= 2)
 
@@ -249,70 +372,105 @@ def cooccupancy_spans(intervals: pl.LazyFrame) -> pl.LazyFrame:
 		pl.col("animal_id") < pl.col("animal_id_2")
 	)
 
-	# A new meeting starts wherever a span's start != the previous span's end for that pair.
 	group = ["animal_id", "animal_id_2", "position"]
 	return (
 		pairs.select("position", "time", "end", "animal_id", "animal_id_2")
 		.sort(*group, "time")
-		.with_columns(
-			(pl.col("time") != pl.col("end").shift(1).over(group)).fill_null(True).alias("is_new")
-		)
-		.with_columns(pl.col("is_new").cum_sum().over(group).alias("meeting_id"))
+		.with_columns(contiguous_run_id("time", "end", *group).alias("meeting_id"))
 	)
 
 
-def split_on_minute_boundaries(frame: pl.LazyFrame, recording: Recording) -> pl.LazyFrame:
-	"""Frame with visits that straddle minute boundaries cut into per-minute pieces.
+def split_on_cell_boundaries(
+	frame: pl.LazyFrame, recording: Recording, start: str, end: str
+) -> pl.LazyFrame:
+	"""Frame with every ``[start, end)`` interval cut wherever a cell of the time grid begins.
 
-	Each row is the interval ``[datetime - time_spent, datetime)``. Cutting it at
-	every minute mark means no piece crosses one, so its time can be attributed to
-	the right minute, hour and phase. ``time_spent`` becomes each piece's own length
-	and ``time_under`` is shared out in proportion.
+	No piece then crosses from one hour, phase or day into the next, so its time can be
+	attributed to the cell it lies in. A zero-length interval stays a single piece.
+
+	Args:
+		frame: table holding the interval bounds.
+		recording: the recording whose grid the cuts come from.
+		start: the column holding each interval's start.
+		end: the column holding each interval's end.
+
+	Returns:
+		One row per piece, ``start`` and ``end`` narrowed to it, with ``first_piece``
+		marking the piece each interval opens with and the ``phase``, ``day`` and
+		``hour`` of the cell it lies in.
+	"""
+	starts = grids.cell_starts(recording)
+	cells = pl.lit(starts)
+	last = len(starts) - 1
+
+	# Indices into the cell starts: the cell holding the interval's start (-1 before the
+	# window) and the last cell the interval reaches into, never before the first.
+	first = cells.search_sorted(pl.col(start), side="right").cast(pl.Int64) - 1
+	final = pl.max_horizontal(
+		cells.search_sorted(pl.col(end), side="left").cast(pl.Int64) - 1, first
+	)
+
+	return (
+		frame.with_columns(first.alias("__first"), final.alias("__final"))
+		.with_columns(pl.int_ranges("__first", pl.col("__final") + 1).alias("__cell"))
+		.explode("__cell")
+		.with_columns(
+			pl.when(pl.col("__cell") == pl.col("__first"))
+			.then(pl.col(start))
+			.otherwise(cells.gather(pl.col("__cell").clip(0, last)))
+			.alias(start),
+			pl.when(pl.col("__cell") == pl.col("__final"))
+			.then(pl.col(end))
+			.otherwise(cells.gather((pl.col("__cell") + 1).clip(0, last)))
+			.alias(end),
+			(pl.col("__cell") == pl.col("__first")).alias("first_piece"),
+		)
+		.with_columns(
+			grids.get_phase(recording, start),
+			grids.get_day(recording, start),
+			grids.get_hour(recording, start),
+		)
+		.drop("__first", "__final", "__cell")
+	)
+
+
+def split_visits_on_cells(frame: pl.LazyFrame, recording: Recording) -> pl.LazyFrame:
+	"""Frame with visits that straddle cells of the time grid cut into one piece per cell.
+
+	Each row is the interval ``[datetime - time_spent, datetime)``, cut by
+	:func:`split_on_cell_boundaries` so its time is attributed to the right hour, phase
+	and day. ``time_spent`` becomes each piece's own length and ``time_under`` is shared
+	out in proportion.
 
 	Within a split visit only the first piece keeps ``interpolated=False``, so
 	filtering ``interpolated == False`` recovers one row per original visit.
 
 	Args:
 		frame: table with ``datetime``, ``time_spent`` and ``time_under``.
-		recording: the recording whose phases the pieces are assigned to.
+		recording: the recording whose grid the pieces are assigned to.
 
 	Returns:
-		One row per minute-aligned piece, with ``interpolated`` and a ``row_id``
-		identifying the visit the piece came from.
+		One row per piece, with ``interpolated`` and a ``row_id`` identifying the visit
+		the piece came from.
 	"""
-	minute = pl.duration(minutes=1)
+	visit = pl.col("time_spent").dt.total_microseconds()
+	piece = (pl.col("datetime") - pl.col("__start")).dt.total_microseconds()
 
 	return (
 		frame.with_row_index("row_id")
-		.with_columns((pl.col("datetime") - pl.col("time_spent")).alias("__start"))
 		.with_columns(
-			pl.datetime_ranges(
-				pl.col("__start").dt.truncate("1m") + minute,
-				pl.col("datetime"),
-				interval="1m",
-				closed="left",
-			).alias("__marks")
+			(pl.col("datetime") - pl.col("time_spent")).alias("__start"), visit.alias("__visit")
 		)
+		.pipe(split_on_cell_boundaries, recording, "__start", "datetime")
 		.with_columns(
-			pl.concat_list("__start", "__marks").alias("__piece_start"),
-			pl.concat_list("__marks", "datetime").alias("__piece_end"),
-		)
-		.explode("__piece_start", "__piece_end", empty_as_null=True)
-		.with_columns(
-			(pl.col("datetime") - pl.col("__start")).dt.total_microseconds().alias("__visit"),
-			(pl.col("__piece_end") - pl.col("__piece_start"))
-			.dt.total_microseconds()
-			.alias("__piece"),
-		)
-		.with_columns(
-			(pl.col("__piece_end") - pl.col("__piece_start")).alias("time_spent"),
+			(pl.col("datetime") - pl.col("__start")).alias("time_spent"),
 			pl.when(pl.col("__visit") > 0)
 			.then(
 				pl.duration(
 					microseconds=(
 						pl.col("time_under")
 						.dt.total_microseconds()
-						.mul(pl.col("__piece"))
+						.mul(piece)
 						.truediv(pl.col("__visit"))
 					)
 					.round()
@@ -321,13 +479,7 @@ def split_on_minute_boundaries(frame: pl.LazyFrame, recording: Recording) -> pl.
 			)
 			.otherwise(pl.col("time_under"))
 			.alias("time_under"),
-			(pl.int_range(pl.len()).over("row_id") > 0).alias("interpolated"),
+			(~pl.col("first_piece")).alias("interpolated"),
 		)
-		.with_columns(
-			grids.get_phase(recording, "__piece_start"),
-			grids.get_day(recording, "__piece_start"),
-			grids.get_hour(recording, "__piece_start"),
-			pl.col("__piece_end").alias("datetime"),
-		)
-		.select(pl.exclude("^__.*$"))
+		.drop("__start", "__visit", "first_piece")
 	)

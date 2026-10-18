@@ -13,7 +13,6 @@ from deepecohab.plotting.export import LEGEND_ITEM_PX, text_px
 from deepecohab.plotting.prepare import READ_KINDS, Heatmap
 from deepecohab.plotting.registry import Figure
 from deepecohab.plotting.theme import (
-	AURORA,
 	COLORBAR,
 	CORNER_RADIUS,
 	EVENT_LOOKS,
@@ -224,7 +223,11 @@ def _event_runs(spans: pl.DataFrame) -> pl.DataFrame:
 		.agg(
 			pl.col("x0").min(),
 			pl.col("x1").max(),
-			*[getattr(pl.col(c), f)() for c, f in (("start", "min"), ("end", "max")) if c in spans.columns],
+			*[
+				getattr(pl.col(c), f)()
+				for c, f in (("start", "min"), ("end", "max"))
+				if c in spans.columns
+			],
 			pl.col("position").drop_nulls().unique().sort().str.join(", "),
 		)
 		.drop("run")
@@ -283,13 +286,22 @@ def _event_lanes(figure: Figure, runs: pl.DataFrame, xrefs: list[str], offset: f
 		]
 
 		name = str(rows["event"][0])
-		# One tip per bar, in the order of the bars above; the position list is left out for the whole habitat.
+		# One tip per bar, in the order of the bars above
+		# the position list is left out for the whole habitat.
 		tips += [
 			"\n".join(
 				[
 					name,
-					*([f"{row['start']:%Y-%m-%d %H:%M} - {row['end']:%Y-%m-%d %H:%M}"] if "start" in row else []),
-					*([", ".join(_tick_labels(row["position"].split(", ")))] if row["position"] else []),
+					*(
+						[f"{row['start']:%Y-%m-%d %H:%M} - {row['end']:%Y-%m-%d %H:%M}"]
+						if "start" in row
+						else []
+					),
+					*(
+						[", ".join(_tick_labels(row["position"].split(", ")))]
+						if row["position"]
+						else []
+					),
 				]
 			)
 			for row in rows.iter_rows(named=True)
@@ -334,7 +346,7 @@ def _event_spans(
 	facets: list[str] | None = None,
 	*,
 	above: bool = False,
-	offset: "PythonLiteral | None" = None,
+	offset: PythonLiteral | None = None,
 ) -> None:
 	"""Mark where each event ran on a time axis: a lane above the plot, a mark inside it.
 
@@ -686,17 +698,21 @@ def plot_time_alone(
 
 
 #: Title, y-axis title and hover label of the count line plots, per input.
-_LINE_LABELS: dict[str, tuple[str, str, str]] = {
-	"activity": ("<b>Activity over time</b>", "<b>Antenna detections</b>", "Detections"),
-	"chasings": ("<b>Chasing over time</b>", "<b># of chasing events</b>", "Events"),
-}
+_LINE_LABELS: frozendict[str, tuple[str, str, str]] = frozendict(
+	{
+		"activity": ("<b>Activity over time</b>", "<b>Antenna detections</b>", "Detections"),
+		"chasings": ("<b>Chasing over time</b>", "<b># of chasing events</b>", "Events"),
+	}
+)
 
 #: Hover label and axis title of each binned x axis.
-_X_LABELS: dict[str, tuple[str, str]] = {
-	"hour": ("Hour", "<b>Hour since phase onset</b>"),
-	"day": ("Day", "<b>Day</b>"),
-	"phase_count": ("Phase", "<b>Phase</b>"),
-}
+_X_LABELS: frozendict[str, tuple[str, str]] = frozendict(
+	{
+		"hour": ("Hour", "<b>Hour since phase onset</b>"),
+		"day": ("Day", "<b>Day</b>"),
+		"phase_count": ("Phase", "<b>Phase</b>"),
+	}
+)
 
 
 def _line_x_axis(
@@ -991,7 +1007,7 @@ def _matrix(
 			"coloraxis": {
 				"colorscale": LAGOON,
 				"cmin": 0,
-				"cmax": matrix.max().item(),
+				"cmax": np.nanmax(matrix).item(),
 				"autocolorscale": False,
 			},
 		},
@@ -1110,7 +1126,7 @@ def _edge_traces(edges: pl.DataFrame) -> list[dict]:
 	The arrowheads ride the figure's colour axis, so Format can swap its scale; a line
 	cannot, so its colour is sampled here and resampled by the clientside Format.
 	"""
-	colorscale: list[str] = sample_colorscale(AURORA, edges["scaled"].to_list())
+	colorscale: list[str] = sample_colorscale(LAGOON, edges["scaled"].to_list())
 
 	return [
 		{
@@ -1145,6 +1161,7 @@ def _node_trace(
 		labels: what each node is called, aligned with ``nodes``.
 		include_ranking: whether the hover text names the ranking as well as the animal.
 	"""
+	# A marker needs a positive size; the hover keeps the animal's real value.
 	sizes = [size if size > 0 else 0.1 for size in nodes["size"]]
 
 	return {
@@ -1154,7 +1171,7 @@ def _node_trace(
 		"text": [f"<b>{label}</b>" for label in labels],
 		"hovertext": [
 			f"Mouse ID: {label}<br>Ranking: {size}" if include_ranking else f"Mouse ID: {label}"
-			for label, size in zip(labels, sizes, strict=True)
+			for label, size in zip(labels, nodes["size"], strict=True)
 		],
 		"hoverinfo": "text",
 		"mode": "markers+text",
@@ -1192,7 +1209,7 @@ def plot_network_graph(
 			"showlegend": False,
 			"hovermode": "closest",
 			"title": {"text": title, "x": 0.5, "y": 0.95},
-			"coloraxis": {"colorscale": AURORA, "cmin": 0, "cmax": 1, "showscale": False},
+			"coloraxis": {"colorscale": LAGOON, "cmin": 0, "cmax": 1, "showscale": False},
 			"xaxis": hidden,
 			"yaxis": hidden | {"scaleanchor": "x", "scaleratio": 1},
 			"colorway": colorway,
@@ -1569,8 +1586,10 @@ def plot_phenotype_map(
 		},
 	)
 
-	top = frame.sort("ordinal", nulls_last=True).row(-1, named=True)
-	if top["gregariousness"] is not None:
+	# Only a rated animal can top a hierarchy: with no chases there is none to point at.
+	rated = frame.drop_nulls("ordinal")
+	top = rated.sort("ordinal").row(-1, named=True) if rated.height else None
+	if top is not None and top["gregariousness"] is not None:
 		active_str = "more" if top["visits"] >= frame["visits"].median() else "less"
 		social_str = "more" if top["gregariousness"] >= frame["gregariousness"].median() else "less"
 

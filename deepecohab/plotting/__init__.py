@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 	from deepecohab.core.data_model import Recording
 
 
-def plot(name: str, target: "Recording | PlotContext", **options: Any) -> Figure:
+def plot(name: str, target: Recording | PlotContext, **options: Any) -> Figure:
 	"""Build one plot from a recording or a context, as the dict plotly.js draws.
 
 	Hold a :class:`PlotContext` when making several plots: it caches the analysis

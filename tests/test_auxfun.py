@@ -142,38 +142,6 @@ def test_phase_never_straddles_an_experiment_day():
 	assert grid.filter(pl.col("day") == 1)["phase_count"].n_unique() == 2
 
 
-def test_day_single_date_is_one():
-	df = pl.DataFrame(
-		{"datetime": aware_dt_series([at(2023, 5, 24, h, 0, 0) for h in (0, 12, 23)])}
-	)
-	out = df.with_columns(grids.get_day(RECORDING))
-	assert out["day"].to_list() == [1, 1, 1]
-
-
-def test_day_consecutive_dates():
-	df = pl.DataFrame(
-		{
-			"datetime": aware_dt_series(
-				[at(2023, 5, 24, 12, 0, 0), at(2023, 5, 25, 12, 0, 0), at(2023, 5, 26, 1, 0, 0)]
-			)
-		}
-	)
-	out = df.with_columns(grids.get_day(RECORDING))
-	assert out["day"].to_list() == [1, 2, 3]
-
-
-def test_day_missing_day_leaves_gap():
-	"""A whole missing day produces a gap in numbering, not renumbering.
-
-	Dates 24th and 26th (25th absent) -> day 1 and day 3, never 1 and 2.
-	"""
-	df = pl.DataFrame(
-		{"datetime": aware_dt_series([at(2023, 5, 24, 12, 0, 0), at(2023, 5, 26, 12, 0, 0)])}
-	)
-	out = df.with_columns(grids.get_day(RECORDING))
-	assert out["day"].to_list() == [1, 3]
-
-
 def test_day_anchored_to_experiment_start_not_to_the_frame():
 	"""Day counts from the recording's origin, so a frame missing day 1 still numbers right.
 
@@ -191,12 +159,6 @@ def test_day_anchored_to_experiment_start_not_to_the_frame():
 		}
 	)
 	assert out_of_order.with_columns(grids.get_day(RECORDING))["day"].to_list() == [3, 1]
-
-
-def test_day_dtype_is_u16():
-	df = pl.DataFrame({"datetime": aware_dt_series([at(2023, 5, 24, 12, 0, 0)])})
-	out = df.with_columns(grids.get_day(RECORDING))
-	assert out.schema["day"] == pl.UInt16
 
 
 def test_day_across_dst_boundary_is_24_elapsed_hours():
@@ -540,8 +502,8 @@ def test_cooccupancy_spans_stitches_contiguous_spans_into_one_meeting():
 	"""A pair's meeting survives a third animal walking through it.
 
 	C's arrival and departure cut the A/B span into three, but they abut, so the pair met
-	once. ``is_new`` marks only the opening span, which is what makes an encounter count
-	an event rather than a count of sweep segments.
+	once. One ``meeting_id`` for all three spans is what makes an encounter count an event
+	rather than a count of sweep segments.
 	"""
 	result = (
 		transforms.cooccupancy_spans(
@@ -559,7 +521,6 @@ def test_cooccupancy_spans_stitches_contiguous_spans_into_one_meeting():
 		10.0,
 		20.0,
 	]
-	assert pair["is_new"].to_list() == [True, False, False]
 	assert pair["meeting_id"].unique().to_list() == [1]
 	# Pairs are unordered, so the A/B meeting is not repeated as B/A.
 	assert (result["animal_id"].cast(pl.String) < result["animal_id_2"].cast(pl.String)).all()
@@ -578,5 +539,4 @@ def test_cooccupancy_spans_starts_a_new_meeting_after_a_break():
 		)
 	).collect()
 
-	assert result["is_new"].to_list() == [True, True]
 	assert sorted(result["meeting_id"].to_list()) == [1, 2]

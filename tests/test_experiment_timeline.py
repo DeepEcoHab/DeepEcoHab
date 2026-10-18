@@ -56,6 +56,7 @@ def test_origin_is_the_first_onset_after_acquisition_begins():
 	line = timeline(at(2023, 5, 24, 9, 30), at(2023, 5, 28, 0, 0), ALIGNED, "dark_phase")
 	assert line.experiment_start == at(2023, 5, 24, 20, 0)
 	assert line.discarded_lead == dt.timedelta(hours=10, minutes=30)
+	assert line.unrecorded_lead == dt.timedelta(0)
 
 
 def test_origin_equals_acquisition_when_it_begins_on_the_onset():
@@ -77,14 +78,6 @@ def test_origin_looks_back_when_the_onset_has_just_passed():
 	assert line.experiment_start == at(2023, 5, 24, 20, 0)
 	assert line.discarded_lead == dt.timedelta(0)
 	assert line.unrecorded_lead == dt.timedelta(minutes=1)
-
-
-def test_origin_looks_forward_when_the_next_onset_is_nearer():
-	"""Mid-morning is closer to that evening's onset than to the previous one."""
-	line = timeline(at(2023, 5, 24, 9, 30), at(2023, 5, 28, 0, 0), ALIGNED, "dark_phase")
-
-	assert line.experiment_start == at(2023, 5, 24, 20, 0)
-	assert line.unrecorded_lead == dt.timedelta(0)
 
 
 def test_origin_can_be_the_previous_day():

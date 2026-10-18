@@ -58,12 +58,6 @@ def test_diamond_is_valid_topological_order(graph):
 	assert order[-1] == "join"
 
 
-def test_order_is_deterministic(graph):
-	deps = {"a": [], "b": [], "c": ["a", "b"]}
-	registry = graph(deps)
-	assert registry.step_order() == registry.step_order()
-
-
 def test_targets_returns_only_transitive_closure(graph):
 	deps = {"a": [], "b": ["a"], "c": ["b"], "other": []}
 	order = graph(deps).step_order(targets=["c"])

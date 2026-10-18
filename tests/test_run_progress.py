@@ -1,36 +1,21 @@
-"""Clicking Run analysis paints step 0 before the background run first reports."""
+"""Run analysis starts in the server's own process and reports progress as a snapshot."""
 
+import time
 from pathlib import Path
 
 import pytest
 from dash import Dash
-from dash._callback_context import context_value
-from dash._utils import AttributeDict
 from test_project_table import make_recording, write_recording
 
 from deepecohab import Project
 from deepecohab.app import services
-from deepecohab.core.data_model import DataFrameRegistry
 
 Dash(__name__, use_pages=True, pages_folder="")
-
-from deepecohab.app.pages import projects  # noqa: E402
-
-
-def _actionbar(*args):
-	context = AttributeDict(
-		triggered_inputs=[{"prop_id": "run-active.data", "value": True}], updated_props={}
-	)
-	context_value.set(context)
-	try:
-		return projects._render_actionbar(*args), context.updated_props
-	finally:
-		context_value.set({})
 
 
 @pytest.fixture
 def selection(tmp_path, monkeypatch):
-	monkeypatch.setattr(services, "load_project", lambda location: Project.load(Path(location)))
+	monkeypatch.setattr(services, "notify", lambda *args: None)
 	project = Project.create(project_name="p", experimenter="t", location=tmp_path / "project")
 	project.add_recordings(
 		path
@@ -43,24 +28,28 @@ def selection(tmp_path, monkeypatch):
 	return [[location, "r1"], [location, "r2"]]
 
 
-def test_run_start_seeds_progress_for_the_recordings_it_will_build(selection):
-	order = DataFrameRegistry.step_order()
-	(hidden, classes, message, _), updated = _actionbar(selection, None, True, False)
+def _finish(run_id):
+	deadline = time.monotonic() + 120
+	while (finished := services.finish_run(run_id, {})) is None:
+		assert time.monotonic() < deadline
+		time.sleep(0.05)
+	return finished
 
+
+def test_a_run_reports_every_selected_recording_and_builds_them(selection):
 	location = selection[0][0]
-	seeded = {location: {"r1": [0, len(order), order[0]], "r2": [0, len(order), order[0]]}}
-	assert updated["run-progress"] == {"data": seeded}
-	assert not hidden
-	assert "is-running" in classes
-	assert f"0/{2 * len(order)} steps" in str(message)
+	run_id = services.start_run(selection, None, overwrite=False, use_prev_ranking=True)
+
+	assert set(services.run_progress(run_id)[location]) == {"r1", "r2"}
+	failed, cleared = _finish(run_id)
+
+	assert failed == {location: {}}
+	assert cleared == []
+	assert all(services.recording_status(Path(location) / name).values() for _, name in selection)
+	assert not services.analysis_running()
 
 
-def test_nothing_to_build_seeds_empty_progress_once(selection, monkeypatch):
-	monkeypatch.setattr(services, "_analysed", lambda location, name: True)
-	(_, classes, _, _), updated = _actionbar(selection, None, True, False)
-	assert updated["run-progress"] == {"data": {}}
-	assert "is-running" not in classes
-
-	# The seeded {} comes back as an input; it must not seed again.
-	_, updated = _actionbar(selection, {}, True, False)
-	assert updated == {}
+def test_nothing_to_build_starts_no_run(selection):
+	run_id = services.start_run(selection, None, overwrite=False, use_prev_ranking=True)
+	_finish(run_id)
+	assert services.start_run(selection, None, overwrite=False, use_prev_ranking=True) is None

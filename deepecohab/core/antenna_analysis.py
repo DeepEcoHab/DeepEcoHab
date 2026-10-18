@@ -1,7 +1,8 @@
 import datetime as dt
+from pathlib import Path
+from typing import IO
 
 import polars as pl
-from openskill.models import PlackettLuce
 
 from deepecohab.core import grids, transforms
 from deepecohab.core.data_model import (
@@ -11,6 +12,7 @@ from deepecohab.core.data_model import (
 	Layout,
 	Recording,
 )
+lazy from deepecohab.core import ranking_algorithm
 
 
 def _get_activity(padded: pl.LazyFrame, recording: Recording) -> pl.LazyFrame:
@@ -31,17 +33,16 @@ def _get_activity(padded: pl.LazyFrame, recording: Recording) -> pl.LazyFrame:
 	)
 
 
-def _occupancy_intervals(padded: pl.LazyFrame, recording: Recording) -> pl.LazyFrame:
+def _occupancy_intervals(frame: pl.LazyFrame, recording: Recording) -> pl.LazyFrame:
 	"""Frame of occupancy intervals for every real position, tunnels undirected.
 
-	The shared front half of the occupancy sweep. Solitary time and co-presence read the
-	same spans and differ only in how many animals they keep, so the two have to see the
-	same positions. Directionality is dropped first, or two animals passing through one
+	The shared front half of solitary time and co-presence, so the two see the same
+	positions. Directionality is dropped first, or two animals passing through one
 	tunnel in opposite directions would sit in different positions and never meet, and
 	``undefined`` is excluded because it is not a place.
 	"""
 	return (
-		transforms.remove_tunnel_directionality(padded, recording)
+		transforms.remove_tunnel_directionality(frame, recording)
 		.filter(pl.col("position") != Layout.UNDEFINED)
 		.pipe(transforms.add_occupancy_bounds)
 	)
@@ -53,14 +54,21 @@ def _get_time_alone(
 	"""Frame of how long each animal occupied a position with no other animal present.
 
 	A span from :func:`transforms.occupancy_spans` holding one animal is time that
-	animal spent alone. Spans shorter than ``params.minimum_time_alone`` and
-	``undefined`` positions are excluded.
+	animal spent alone. The sweep also cuts wherever the animal itself reads or a cell
+	of the grid begins, so back-to-back spans of one animal in one position make up a
+	single continuous bout: a bout shorter than ``params.minimum_time_alone`` is dropped
+	whole, and a longer one keeps every span. ``undefined`` positions are excluded.
 	"""
 	return (
 		transforms.occupancy_spans(_occupancy_intervals(padded, recording))
+		.filter(pl.col("animals_present") == 1)
+		.sort("animal_id", "position", "time")
+		.with_columns(
+			transforms.contiguous_run_id("time", "end", "animal_id", "position").alias("bout")
+		)
 		.filter(
-			pl.col("animals_present") == 1,
-			pl.col("end") - pl.col("time") > pl.duration(seconds=params.minimum_time_alone),
+			(pl.col("end") - pl.col("time")).sum().over("animal_id", "position", "bout")
+			> pl.duration(seconds=params.minimum_time_alone)
 		)
 		.select(
 			"animal_id",
@@ -239,21 +247,14 @@ def calculate_chasings(recording: Recording, params: AnalysisParams) -> pl.LazyF
 	chasing the winner is the one doing the chasing.
 
 	Returns:
-		A ``chasings`` count per chaser, chased, tunnel and hour, on the dense grid.
+		A ``chasings`` count per chaser, chased, tunnel and hour, for the cells with at
+		least one chasing; a missing cell is a zero (see ``time_grid``).
 	"""
-	chasings = (
+	return (
 		recording.load_results("match_df")
 		.group_by([*CALENDAR_COLUMNS, "position", "winner", "loser"])
 		.len(name="chasings")
 		.rename({"winner": "chaser", "loser": "chased"})
-	)
-
-	return grids.reindex_onto_grid(
-		chasings,
-		recording,
-		("chaser", "chased"),
-		ordered=True,
-		positions=recording.layout.tunnel_names_directional,
 	)
 
 
@@ -272,15 +273,13 @@ def calculate_ranking(recording: Recording, params: AnalysisParams) -> pl.LazyFr
 		``social_rank`` its ordinal puts it in at that point, and the calendar columns
 		of the match.
 	"""
-	animal_tags = recording.cohort.animal_tags
-
-	model = PlackettLuce(limit_sigma=True, balance=True)
-	ranking = {player: model.rating() for player in animal_tags}
+	model = ranking_algorithm.MODEL
+	ranking = dict.fromkeys(recording.cohort.animal_tags, (model.mu, model.sigma))
 
 	previous_ranking = recording.prev_ranking if params.use_prev_ranking else None
 	if previous_ranking is not None:
 		for name, mu, sigma in previous_ranking.select("animal_id", "mu", "sigma").iter_rows():
-			ranking[name] = model.rating(mu=mu, sigma=sigma)
+			ranking[name] = (float(mu), float(sigma))
 
 	# The replay is order-dependent, so equal timestamps need a tiebreak or the ratings
 	# shift between runs. `position` is deliberately left out: it is Categorical, so its
@@ -293,33 +292,22 @@ def calculate_ranking(recording: Recording, params: AnalysisParams) -> pl.LazyFr
 		.collect()
 	)
 
-	rows: list[dict] = []
-	for loser_name, winner_name, moment, *calendar in matches.iter_rows():
-		new_ratings = model.rate([[ranking[loser_name]], [ranking[winner_name]]], ranks=[1, 0])
+	animals = list(ranking)
+	mu_trajectory, sigma_trajectory = ranking_algorithm.replay(
+		ranking, zip(matches["winner"], matches["loser"], strict=True)
+	)
 
-		ranking[loser_name] = new_ratings[0][0]
-		ranking[winner_name] = new_ratings[1][0]
-
-		for animal, rating in ranking.items():
-			rows.append(
-				{
-					"animal_id": animal,
-					"mu": rating.mu,
-					"sigma": rating.sigma,
-					"ordinal": round(rating.ordinal(), 3),
-					"datetime": moment,
-					**dict(zip(CALENDAR_COLUMNS, calendar, strict=True)),
-				}
-			)
-
-	schema = {
-		"animal_id": pl.String,
-		"mu": pl.Float64,
-		"sigma": pl.Float64,
-		"ordinal": pl.Float64,
-	} | {name: matches.schema[name] for name in ("datetime", *CALENDAR_COLUMNS)}
-
-	return pl.LazyFrame(rows, schema=schema).with_columns(
+	return (
+		matches.lazy()
+		.select(pl.col("datetime", *CALENDAR_COLUMNS).repeat_by(len(animals)).explode())
+		.with_columns(
+			animal_id=pl.Series(animals * matches.height, dtype=pl.String),
+			mu=pl.Series(mu_trajectory, dtype=pl.Float64),
+			sigma=pl.Series(sigma_trajectory, dtype=pl.Float64),
+		)
+		.with_columns(ordinal=(pl.col("mu") - 3 * pl.col("sigma")).round(3))
+		.select("animal_id", "mu", "sigma", "ordinal", "datetime", *CALENDAR_COLUMNS)
+	).with_columns(
 		pl.when(pl.col("ordinal") == pl.col("ordinal").max().over("datetime"))
 		.then(pl.lit("dominant"))
 		.when(pl.col("ordinal") == pl.col("ordinal").min().over("datetime"))
@@ -352,68 +340,59 @@ def get_prev_ranking(ranking: pl.LazyFrame | pl.DataFrame) -> pl.LazyFrame:
 	return ranking.group_by("animal_id", maintain_order=True).agg(pl.last("mu"), pl.last("sigma"))
 
 
-@DataFrameRegistry.register("pairwise_meetings", requires=["padded_df"])
+def read_ranking(source: Path | IO[bytes], *, csv: bool) -> pl.DataFrame:
+	"""A ranking saved as parquet, or as CSV with ``csv``, for :meth:`Recording.set_prev_ranking`.
+
+	``animal_id`` is read from CSV as text, so numeric tags keep their leading zeros.
+	"""
+	if csv:
+		return pl.read_csv(source, schema_overrides={"animal_id": pl.String})
+	return pl.read_parquet(source)
+
+
+@DataFrameRegistry.register("pairwise_meetings", requires=["main_df"])
 def calculate_pairwise_meetings(recording: Recording, params: AnalysisParams) -> pl.LazyFrame:
 	"""Frame of co-occurrences and shared time for every pair of animals, position and hour.
 
-	A sweep over occupancy exposes, at every instant, which animals are present. Pairs are
-	formed from each span's occupants, contiguous spans of the same pair are stitched into
-	one continuous meeting, meetings shorter than ``params.minimum_time`` seconds are
-	dropped, and the rest are summed onto the dense grid.
+	Each animal's back-to-back registrations in one position merge into a stay, and two
+	animals' overlapping stays in one position are a meeting, from the later arrival to
+	the earlier departure. Meetings shorter than ``params.minimum_time`` seconds are
+	dropped; the rest are cut at the cells of the grid, so their time lands in the hours
+	it was spent, and summed per cell. A meeting counts as one encounter, in
+	the cell it began in.
 
-	Cages and tunnels are both covered, on the same intervals ``_get_time_alone`` reads.
+	Cages and tunnels are both covered, on the same positions ``_get_time_alone`` reads.
 	Tunnel co-presence is physically different - two animals in a two-antenna tunnel are in
 	contact, and such a meeting is what the tube test reads as a contest - but it is held to
 	the same ``params.minimum_time`` for now; whether that threshold suits tunnels is a
 	question for real data.
 
 	Returns:
-		``time_together`` and ``pairwise_encounters`` per pair, position and hour.
+		``time_together`` and ``pairwise_encounters`` per pair, position and hour, for
+		the cells a pair met in; a missing cell is a zero (see ``time_grid``).
 	"""
-	padded = recording.load_results("padded_df")
-
-	pairs = transforms.cooccupancy_spans(_occupancy_intervals(padded, recording)).with_columns(
-		(pl.col("end") - pl.col("time")).alias("duration")
+	stays = transforms.merge_contiguous_stays(
+		_occupancy_intervals(recording.load_results("main_df"), recording)
+	)
+	meetings = transforms.overlapping_stays(stays).filter(
+		pl.col("end") - pl.col("start") > dt.timedelta(seconds=params.minimum_time)
 	)
 
-	# Drop meetings whose total continuous co-presence is below minimum_time.
-	pair_group = ["animal_id", "animal_id_2", "position"]
-	meeting_duration = pairs.group_by(*pair_group, "meeting_id").agg(
-		pl.sum("duration").alias("meeting_duration")
-	)
-	pairs = pairs.join(meeting_duration, on=[*pair_group, "meeting_id"]).filter(
-		pl.col("meeting_duration") > dt.timedelta(seconds=params.minimum_time)
-	)
-
-	pairwise_meetings = (
-		# The spans are new intervals rather than registrations, so they take their own
-		# calendar columns instead of inheriting any.
-		pairs.with_columns(
-			grids.get_phase(recording, "time"),
-			grids.get_day(recording, "time"),
-			grids.get_hour(recording, "time"),
-		)
+	return (
+		transforms.split_on_cell_boundaries(meetings, recording, "start", "end")
 		.pipe(grids.assign_phase_count, recording)
 		.group_by([*CALENDAR_COLUMNS, "position", "animal_id", "animal_id_2"])
 		.agg(
-			pl.sum("duration").alias("time_together"),
-			pl.col("is_new").sum().alias("pairwise_encounters"),
+			(pl.col("end") - pl.col("start")).sum().alias("time_together"),
+			pl.col("first_piece").sum().alias("pairwise_encounters"),
 		)
-	)
-
-	return grids.reindex_onto_grid(
-		pairwise_meetings,
-		recording,
-		("animal_id", "animal_id_2"),
-		ordered=False,
-		positions=recording.layout.positions_non_directional,
 	)
 
 
 def _require_chance(chance: pl.Series) -> pl.Series:
 	"""``chance`` unchanged, or a raise if any of it is null.
 
-	A null means the left joins behind it found no occupancy or no phase duration for a
+	A null means the joins behind it found no occupancy or no phase duration for a
 	pair-cage-phase that co-presence was recorded in. Summed, that cage would simply
 	contribute its observed time with no chance term subtracted, which reads as
 	sociability the animals never showed. A lazy frame has no assert and the step is
@@ -467,7 +446,13 @@ def calculate_incohort_sociability(recording: Recording, params: AnalysisParams)
 	).filter(pl.col("animal_id") < pl.col("animal_id_2"))
 
 	return (
-		time_together.join(expected_together, on=[*core_columns, "position"], how="left")
+		# Full, as pairwise_meetings leaves out the cages a pair never met in, and those
+		# still subtract their chance term; a meeting with no occupancy behind it leaves a
+		# null chance, which _require_chance turns into a raise.
+		time_together.join(
+			expected_together, on=[*core_columns, "position"], how="full", coalesce=True
+		)
+		.with_columns(pl.col("time_together").fill_null(dt.timedelta(0)))
 		# An inner join, unlike the one above: the dense grid numbers a phase occurrence for
 		# the window's final instant whenever that instant opens one, and phase_durations
 		# measures no duration for it. Nothing can happen in an instant, so those cells are

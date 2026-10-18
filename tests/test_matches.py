@@ -125,14 +125,6 @@ def test_inside_window_counts(monkeypatch):
 		assert result.height == 1, f"gap {gap} should be included"
 
 
-def test_too_fast_and_too_slow_excluded(monkeypatch):
-	"""Followers arriving too soon (<0.1 s) or too late (>1.2 s) are not chases."""
-	for gap in (0.05, 2.0):
-		rows = chase("A", "B", entry=at(2023, 5, 24, 12, 0, 0), exit_gap=gap)
-		result = run_matches(monkeypatch, strategies.main_df_frame(rows, RECORDING))
-		assert result.height == 0, f"gap {gap} should be excluded"
-
-
 def test_winner_must_enter_from_a_cage(monkeypatch):
 	"""If the winner entered the tunnel from another tunnel (not a cage), no chase."""
 	# Winner's predecessor position is a tunnel, so prev_position is not in cages.

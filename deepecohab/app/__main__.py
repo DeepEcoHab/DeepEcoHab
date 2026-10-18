@@ -23,6 +23,14 @@ def main() -> None:
 		format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
 	)
 
+	if args.host not in ("127.0.0.1", "localhost", "::1"):
+		warning = (
+			f"Serving on {args.host}: the app has no login, so anyone who can reach this machine "
+			"can read project data, create folders and update the app."
+		)
+		print(f"WARNING: {warning}", flush=True)
+		logging.warning(warning)
+
 	app = create_app()
 
 	if not args.no_browser:

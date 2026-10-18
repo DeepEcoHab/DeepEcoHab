@@ -27,8 +27,7 @@ Then double-click the **DeepEcoHab** icon on your desktop. See
 
 ## Installation
 
-We keep DeepEcoHab lean to ensure easy integration and fast installation. In the
-spirit of open-source we build on [uv](https://docs.astral.sh/uv/) — a fast,
+We keep DeepEcoHab lean to ensure easy integration and fast installation. We build on [uv](https://docs.astral.sh/uv/) — a fast,
 self-contained Python package manager.
 
 ### Step 1 — Install `uv`
@@ -78,7 +77,7 @@ The app tells you when it starts if a newer version is out; **Update now** insta
 reopens the app. To update by hand instead, close the app and run:
 
 ```
-uv tool upgrade "deepecohab[app]"
+uv tool upgrade --python 3.15 "deepecohab[app]"
 ```
 
 ### Working from code instead
@@ -114,7 +113,7 @@ the pipeline and aggregate a project table.
 
 The data is stored in parquet format - an open-source, column-oriented data storage format which allows extremely fast read/write operations of large dataframes. Every recording in a project keeps one parquet file per analysis table, loaded with `recording.load_results(key)`.
 
-To get the list of available keys call `deepecohab.core.data_model.DataFrameRegistry.list_available()`; similarly `deepecohab.PlotRegistry.list_available()` lists the available visualizations. See the [antenna analysis guide](./docs/tutorial_antenna.md) and [plotting guide](./docs/plotting.md).
+To get the list of available keys call `deepecohab.core.data_model.DataFrameRegistry.list_available()`; similarly `deepecohab.PlotRegistry.list_available()` lists the available visualizations. See [Analyse in Python](https://deepecohab.github.io/DeepEcoHab/analysis), [Data and pipeline](https://deepecohab.github.io/DeepEcoHab/data) and [plotting](https://deepecohab.github.io/DeepEcoHab/plotting).
 
 ## Roadmap
 

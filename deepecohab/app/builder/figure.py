@@ -1,6 +1,6 @@
 import inspect
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass
 from typing import Any
 
 import plotly.express as px
@@ -26,12 +26,14 @@ TEMPLATE = "dark"
 
 #: How a metric measure collapses. The rate is the only one that reads the same at
 #: every grouping level, so it leads and is the default.
-MEASURE_MODES: dict[str, str] = {
-	"rate": "rate",
-	"total": "total",
-	"exposure": "exposure, h",
-	"mean": "hourly mean",
-}
+MEASURE_MODES: frozendict[str, str] = frozendict(
+	{
+		"rate": "rate",
+		"total": "total",
+		"exposure": "exposure, h",
+		"mean": "hourly mean",
+	}
+)
 DEFAULT_MODE = "rate"
 
 #: Every plotly express encoding we are willing to expose, in shelf order.
@@ -98,20 +100,22 @@ BINNED: frozenset[str] = frozenset({"histogram", "heatmap"})
 OBSERVATION: tuple[str, ...] = ("recording", "animal_id")
 
 #: Which chips each shelf accepts. Anything absent takes every kind.
-ACCEPTS: dict[str, frozenset[Kind]] = {
-	"z": frozenset({"measure"}),
-	"size": frozenset({"measure"}),
-	"values": frozenset({"measure"}),
-	"path": frozenset({"dimension", "time"}),
-	"symbol": frozenset({"dimension", "time"}),
-	"line_dash": frozenset({"dimension", "time"}),
-	"line_group": frozenset({"dimension", "time"}),
-	"pattern_shape": frozenset({"dimension", "time"}),
-	"facet_col": frozenset({"dimension", "time"}),
-	"facet_row": frozenset({"dimension", "time"}),
-	"animation_frame": frozenset({"dimension", "time"}),
-	DETAIL: frozenset({"dimension", "time"}),
-}
+ACCEPTS: frozendict[str, frozenset[Kind]] = frozendict(
+	{
+		"z": frozenset({"measure"}),
+		"size": frozenset({"measure"}),
+		"values": frozenset({"measure"}),
+		"path": frozenset({"dimension", "time"}),
+		"symbol": frozenset({"dimension", "time"}),
+		"line_dash": frozenset({"dimension", "time"}),
+		"line_group": frozenset({"dimension", "time"}),
+		"pattern_shape": frozenset({"dimension", "time"}),
+		"facet_col": frozenset({"dimension", "time"}),
+		"facet_row": frozenset({"dimension", "time"}),
+		"animation_frame": frozenset({"dimension", "time"}),
+		DETAIL: frozenset({"dimension", "time"}),
+	}
+)
 
 #: Shelves that hold an ordered list instead of replacing on every drop.
 MULTI: frozenset[str] = frozenset({"path", HOVER, DETAIL})
@@ -119,28 +123,30 @@ MULTI: frozenset[str] = frozenset({"path", HOVER, DETAIL})
 #: What the Blocks box on an ordered field's chip accepts, and the one example it shows.
 BIN_HINT = "3, or 1-3, 4-6"
 
-LABELS: dict[str, str] = {
-	"x": "X",
-	"y": "Y",
-	"z": "Z",
-	"r": "Radius",
-	"theta": "Angle",
-	"path": "Path",
-	"values": "Values",
-	"color": "Colour",
-	"symbol": "Marker",
-	"size": "Size",
-	"line_dash": "Dash",
-	"line_group": "Line group",
-	"pattern_shape": "Pattern",
-	"facet_col": "Facet col",
-	"facet_row": "Facet row",
-	"animation_frame": "Animate",
-	"text": "Label",
-	HOVER: "Hover",
-	POINT_COLOR: "Point colour",
-	DETAIL: "Detail",
-}
+LABELS: frozendict[str, str] = frozendict(
+	{
+		"x": "X",
+		"y": "Y",
+		"z": "Z",
+		"r": "Radius",
+		"theta": "Angle",
+		"path": "Path",
+		"values": "Values",
+		"color": "Colour",
+		"symbol": "Marker",
+		"size": "Size",
+		"line_dash": "Dash",
+		"line_group": "Line group",
+		"pattern_shape": "Pattern",
+		"facet_col": "Facet col",
+		"facet_row": "Facet row",
+		"animation_frame": "Animate",
+		"text": "Label",
+		HOVER: "Hover",
+		POINT_COLOR: "Point colour",
+		DETAIL: "Detail",
+	}
+)
 
 
 @dataclass(frozen=True)
@@ -159,7 +165,7 @@ class PlotType:
 	label: str
 	builder: Any
 	required: tuple[str, ...] = ()
-	extra: dict[str, Any] = dc_field(default_factory=dict)
+	extra: frozendict[str, Any] = frozendict()
 
 	@property
 	def channels(self) -> tuple[str, ...]:
@@ -174,46 +180,59 @@ class PlotType:
 #: Per plot type, the one plotly argument the toolbar lets the user pick and its choices as
 #: value to button label. The first choice is the default, which is also what a state with
 #: no entry for the argument draws.
-OPTIONS: dict[str, tuple[str, dict[str, str]]] = {
-	"bar": (
-		"barmode",
-		{"group": "Grouped", "stack": "Stacked", "relative": "Relative", "overlay": "Overlaid"},
-	),
-	"box": ("boxmode", {"group": "Grouped", "overlay": "Overlaid"}),
-	"line": (
-		"line_shape",
-		{
-			"linear": "Straight",
-			"spline": "Smooth",
-			"hv": "Step hv",
-			"vh": "Step vh",
-			"hvh": "Step hvh",
-		},
-	),
-}
-OPTIONS["area"] = OPTIONS["line"]
+OPTIONS: frozendict[str, tuple[str, frozendict[str, str]]] = frozendict(
+	{
+		"bar": (
+			"barmode",
+			frozendict(
+				{
+					"group": "Grouped",
+					"stack": "Stacked",
+					"relative": "Relative",
+					"overlay": "Overlaid",
+				}
+			),
+		),
+		"box": ("boxmode", frozendict({"group": "Grouped", "overlay": "Overlaid"})),
+		"line": (
+			"line_shape",
+			frozendict(
+				{
+					"linear": "Straight",
+					"spline": "Smooth",
+					"hv": "Step hv",
+					"vh": "Step vh",
+					"hvh": "Step hvh",
+				}
+			),
+		),
+	}
+)
+OPTIONS |= {"area": OPTIONS["line"]}
 
 PLOTS: tuple[PlotType, ...] = (
 	PlotType("line", "Line", px.line, ("x", "y")),
 	PlotType("scatter", "Scatter", px.scatter, ("x", "y")),
 	PlotType("bar", "Bar", px.bar, ("x", "y")),
 	PlotType("area", "Area", px.area, ("x", "y")),
-	PlotType("box", "Box", px.box, ("y",), {"points": "all"}),
-	PlotType("violin", "Violin", px.violin, ("y",), {"box": False, "points": "all"}),
+	PlotType("box", "Box", px.box, ("y",), frozendict(points="all")),
+	PlotType("violin", "Violin", px.violin, ("y",), frozendict(box=False, points="all")),
 	PlotType("strip", "Strip", px.strip, ("y",)),
 	PlotType("histogram", "Histogram", px.histogram, ("x",)),
 	PlotType("ecdf", "ECDF", px.ecdf, ("x",)),
 	# One cell per X and Y value (see build_figure), so avg only pools the Detail groups a
 	# cell holds; plotly's default sum would add their rates up.
-	PlotType("heatmap", "Heatmap", px.density_heatmap, ("x", "y", "z"), {"histfunc": "avg"}),
+	PlotType("heatmap", "Heatmap", px.density_heatmap, ("x", "y", "z"), frozendict(histfunc="avg")),
 	PlotType("scatter_polar", "Polar scatter", px.scatter_polar, ("r", "theta")),
-	PlotType("line_polar", "Polar line", px.line_polar, ("r", "theta"), {"line_close": True}),
+	PlotType(
+		"line_polar", "Polar line", px.line_polar, ("r", "theta"), frozendict(line_close=True)
+	),
 	PlotType("bar_polar", "Polar bar", px.bar_polar, ("r", "theta")),
 	PlotType("sunburst", "Sunburst", px.sunburst, ("path", "values")),
 	PlotType("treemap", "Treemap", px.treemap, ("path", "values")),
 )
 
-BY_NAME: dict[str, PlotType] = {plot.name: plot for plot in PLOTS}
+BY_NAME: frozendict[str, PlotType] = frozendict({plot.name: plot for plot in PLOTS})
 
 
 def plot_type(name: str) -> PlotType:
@@ -533,15 +552,17 @@ def build_frame(
 	return collected(grouped)
 
 
-METRIC_UNITS: dict[str, str] = {
-	"activity": "visits/hour",
-	"time_alone": "fraction of time",
-	"time_together": "fraction, per partner",
-	"pairwise_encounters": "encounters/partner-hour",
-	"n_chasing": "chasings/partner-hour",
-	"n_chased": "chasings/partner-hour",
-	"n_chasing_per_detection": "chasings/detection",
-}
+METRIC_UNITS: frozendict[str, str] = frozendict(
+	{
+		"activity": "visits/hour",
+		"time_alone": "fraction of time",
+		"time_together": "fraction, per partner",
+		"pairwise_encounters": "encounters/partner-hour",
+		"n_chasing": "chasings/partner-hour",
+		"n_chased": "chasings/partner-hour",
+		"n_chasing_per_detection": "chasings/detection",
+	}
+)
 
 #: Shelves that give a faceted metric its own axis, so pooling several is not a problem.
 FACETS: tuple[str, ...] = ("facet_row", "facet_col")
@@ -594,7 +615,7 @@ def warnings_for(
 			)
 		)
 
-	axes = {name for axis in ("x", "y") for name in state["channels"].get(axis, [])}
+	axes = {*state["channels"].get(axis, []) for axis in ("x", "y")}
 	if state["kind"] == "heatmap" and any(item.name in axes for item in wanted):
 		notes.append(
 			Note(
@@ -915,7 +936,7 @@ def color_points(
 		scaled = ((column - column.min()) / (column.max() - column.min())).fill_nan(0.0)
 		keys = data.select((scaled * POINT_BANDS).floor().clip(0, POINT_BANDS - 1)).to_series()
 		shades = [(step + 0.5) / POINT_BANDS for step in range(POINT_BANDS)]
-		samples = px.colors.sample_colorscale(theme.AURORA, shades)
+		samples = px.colors.sample_colorscale(theme.LAGOON, shades)
 		styles = {
 			step: ("", color, t)
 			for step, (t, color) in enumerate(zip(shades, samples, strict=True))
@@ -993,7 +1014,7 @@ def color_points(
 	placed = {"len": 0.6, "y": 0.75, "yanchor": "top"} if boxed_legend else {}
 	figure.update_layout(
 		coloraxis={
-			"colorscale": theme.AURORA,
+			"colorscale": theme.LAGOON,
 			"cmin": low,
 			"cmax": high,
 			"colorbar": {"title": {"text": label}, **placed},

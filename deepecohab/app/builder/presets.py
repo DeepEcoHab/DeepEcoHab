@@ -136,10 +136,10 @@ BUILTINS: tuple[Preset, ...] = (
 	),
 )
 
-BY_ID: dict[str, Preset] = {preset.id: preset for preset in BUILTINS}
+BY_ID: frozendict[str, Preset] = frozendict({preset.id: preset for preset in BUILTINS})
 
 
-def resolve(preset: Preset, project: "Project", choice: str | None = None) -> dict[str, Any]:
+def resolve(preset: Preset, project: Project, choice: str | None = None) -> dict[str, Any]:
 	"""The preset's state ready to load into the builder.
 
 	Args:

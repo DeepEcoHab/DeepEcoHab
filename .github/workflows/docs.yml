@@ -3,9 +3,9 @@ name: docs
 on:
   push:
     branches: ["main"]
-    paths: ["docs/**", "pyproject.toml", "uv.lock", ".github/workflows/docs.yml"]
+    paths: ["docs/**", "deepecohab/**", "examples/**", "pyproject.toml", "uv.lock", ".github/workflows/docs.yml"]
   pull_request:
-    paths: ["docs/**", "pyproject.toml", "uv.lock", ".github/workflows/docs.yml"]
+    paths: ["docs/**", "deepecohab/**", "examples/**", "pyproject.toml", "uv.lock", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
@@ -20,16 +20,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
-          python-version: "3.12"
+          python-version: "3.15"
       - name: Build book
-        run: uv run --locked --extra docs -- jupyter-book build docs
+        working-directory: docs
+        env:
+          BASE_URL: /${{ github.event.repository.name }}
+        # --execute runs the examples on plotting.md and analysis.md, so a broken API fails the build
+        run: |
+          uv run --locked --extra docs --extra notebook -- jupyter-book build --html --execute --strict --ci
+          cp -r videos _build/html/videos
+          # plots.mjs draws figures with the app's own plot scripts
+          cp ../deepecohab/app/assets/plot_dom.js ../deepecohab/app/assets/rounded_corners.js _build/html/
       - name: Upload pages artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: docs/_build/html
 
@@ -47,4 +55,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5

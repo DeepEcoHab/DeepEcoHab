@@ -1,7 +1,8 @@
+import copy
 import inspect
+from annotationlib import Format
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from types import UnionType
 from typing import (
 	TYPE_CHECKING,
 	Any,
@@ -10,7 +11,6 @@ from typing import (
 	Union,
 	get_args,
 	get_origin,
-	get_type_hints,
 )
 
 import polars as pl
@@ -80,7 +80,7 @@ class PlotSpec:
 	builder: Callable[..., Figure]
 	dynamic_choices: Mapping[str, ChoiceResolver]
 
-	def options_for(self, context: "PlotContext") -> tuple[Option, ...]:
+	def options_for(self, context: PlotContext) -> tuple[Option, ...]:
 		"""Options with cohort-dependent choices resolved.
 
 		Returns:
@@ -105,7 +105,7 @@ class PlotSpec:
 				default = [value for value in option.default if value in choices] or list(choices)
 			else:
 				default = option.default if option.default in choices else choices[0]
-			resolved.append(Option(option.name, option.label, choices, default))
+			resolved.append(copy.replace(option, choices=choices, default=default))
 
 		return tuple(resolved)
 
@@ -122,7 +122,7 @@ def _literal_choices(annotation: Any) -> tuple[Any, ...]:
 	if origin is Literal:
 		return get_args(annotation)
 
-	if origin is UnionType or origin is Union:
+	if origin is Union:
 		choices: list[Any] = []
 		for member in get_args(annotation):
 			member_choices = _literal_choices(member)
@@ -140,10 +140,12 @@ def _options_from_signature(
 	dynamic: frozenset[str],
 ) -> tuple[Option, ...]:
 	"""Read a builder's keyword-only parameters as options."""
-	hints = get_type_hints(func)
 	options = []
 
-	for parameter in inspect.signature(func).parameters.values():
+	# FORWARDREF: an annotation naming a type-only import is left unresolved instead of
+	# failing registration; the Literal choices are still read off the rest.
+	signature = inspect.signature(func, annotation_format=Format.FORWARDREF)
+	for parameter in signature.parameters.values():
 		if parameter.kind is not inspect.Parameter.KEYWORD_ONLY:
 			continue
 
@@ -153,8 +155,7 @@ def _options_from_signature(
 				"every option needs one so a plot can be built without arguments"
 			)
 
-		annotation = hints.get(parameter.name)
-		choices = _literal_choices(annotation)
+		choices = _literal_choices(parameter.annotation)
 
 		if choices and parameter.name in dynamic:
 			raise TypeError(
@@ -217,7 +218,7 @@ class PlotRegistry:
 		Returns:
 			A decorator returning the builder unchanged.
 		"""
-		resolvers = dict(dynamic_choices or {})
+		resolvers = frozendict(dynamic_choices or {})
 
 		def wrapper(func: Callable[..., Figure]) -> Callable[..., Figure]:
 			options = _options_from_signature(name, func, frozenset(resolvers))
@@ -263,7 +264,7 @@ class PlotRegistry:
 		return list(cls._specs)
 
 	@classmethod
-	def build(cls, name: str, context: "PlotContext", **options: Any) -> Figure:
+	def build(cls, name: str, context: PlotContext, **options: Any) -> Figure:
 		"""Build a plot.
 
 		Args:
@@ -308,7 +309,7 @@ class PlotRegistry:
 		return plot_spec.builder(context, **values)
 
 	@classmethod
-	def data(cls, name: str, context: "PlotContext", **options: Any) -> dict[str, pl.DataFrame]:
+	def data(cls, name: str, context: PlotContext, **options: Any) -> dict[str, pl.DataFrame]:
 		"""The frames a plot is drawn from, by name: what its CSV export holds.
 
 		Takes the arguments of :meth:`build`, and raises as it does.

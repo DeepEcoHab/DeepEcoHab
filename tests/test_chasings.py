@@ -1,9 +1,8 @@
-"""Tests for calculate_chasings (per-hour chasing counts on the dense grid).
+"""Tests for calculate_chasings (per-hour chasing counts).
 
 calculate_chasings aggregates the event-level match_df into per-(chaser, chased,
-tunnel, hour) counts and reindexes them onto the dense ordered-pair x tunnel grid
-so absent cells are 0. It reads match_df via Recording.load_results, which we
-monkeypatch; the step is called directly.
+tunnel, hour) counts, storing only the cells with a chasing. It reads match_df via
+Recording.load_results, which we monkeypatch; the step is called directly.
 
 All events are placed in day-1 light_phase so the run-length phase_count of the
 hand-built match_df equals the grid's numbering (the first light phase is 1).
@@ -34,20 +33,6 @@ def cell(result: pl.DataFrame, chaser: str, chased: str, position: str) -> int:
 	return int(sub["chasings"].sum())
 
 
-def test_output_schema_and_zero_fill(monkeypatch):
-	"""Result is the dense ordered-pair x tunnel grid with a chasings count."""
-	rows = [
-		{"winner": "A", "loser": "B", "position": "c1_c2", "datetime": at(2023, 5, 24, 12, 0, 0)}
-	]
-	result = run_chasings(monkeypatch, strategies.match_df_frame(rows, RECORDING))
-
-	assert {"chaser", "chased", "position", "chasings"}.issubset(set(result.columns))
-	# Every ordered pair appears (A!=B etc.), and unobserved cells are 0, not null.
-	assert result["chasings"].null_count() == 0
-	# Self-pairs are excluded from the ordered-pair grid.
-	assert result.filter(pl.col("chaser") == pl.col("chased")).height == 0
-
-
 def test_counts_per_ordered_pair(monkeypatch):
 	"""Two A-over-B chases and one B-over-A chase land in the right directed cells."""
 	rows = [
@@ -61,17 +46,6 @@ def test_counts_per_ordered_pair(monkeypatch):
 	assert cell(result, "B", "A", "c1_c2") == 1
 
 
-def test_winner_is_chaser_loser_is_chased(monkeypatch):
-	"""The match winner becomes the chaser; the count never lands on the reversed cell."""
-	rows = [
-		{"winner": "A", "loser": "B", "position": "c1_c2", "datetime": at(2023, 5, 24, 12, 0, 0)}
-	]
-	result = run_chasings(monkeypatch, strategies.match_df_frame(rows, RECORDING))
-
-	assert cell(result, "A", "B", "c1_c2") == 1
-	assert cell(result, "B", "A", "c1_c2") == 0
-
-
 def test_counts_are_per_tunnel(monkeypatch):
 	"""A chase in one tunnel does not leak into another tunnel's cell."""
 	rows = [
@@ -83,13 +57,9 @@ def test_counts_are_per_tunnel(monkeypatch):
 	assert cell(result, "A", "B", "c1_c2") == 0
 
 
-def test_empty_match_df_yields_all_zero_grid(monkeypatch):
-	"""No chasing events anywhere (e.g. a quiet day) -> a full grid of zeros."""
-	result = run_chasings(monkeypatch, strategies.match_df_frame([], RECORDING))
-
-	assert result.height > 0  # the dense grid still exists
-	assert result["chasings"].sum() == 0
-	assert result["chasings"].null_count() == 0
+def test_empty_match_df_yields_no_rows(monkeypatch):
+	"""Only cells with a chasing are stored, so a quiet recording stores none."""
+	assert run_chasings(monkeypatch, strategies.match_df_frame([], RECORDING)).is_empty()
 
 
 def exact_cell(result: pl.DataFrame, chaser: str, chased: str, day: int, hour: int) -> int:

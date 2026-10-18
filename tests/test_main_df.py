@@ -219,8 +219,11 @@ def test_silence_past_the_limit_before_a_stop_is_undefined_up_to_it():
 	]
 
 
-def test_every_read_at_the_restart_instant_is_undefined():
-	"""Two reads in the same microsecond: either could come first, so neither resolves."""
+def test_a_second_read_in_the_same_microsecond_is_dropped():
+	"""One animal cannot be read twice at once: the first read in file order is kept.
+
+	It is the first read after the restart, so it has no predecessor and stays undefined.
+	"""
 	restart = at(2023, 5, 24, 6, 0)
 	recording = stopped(
 		recording_with([("A", 1, at(2023, 5, 24, 0, 5)), ("A", 1, restart), ("A", 2, restart)]),
@@ -230,7 +233,7 @@ def test_every_read_at_the_restart_instant_is_undefined():
 
 	rows = [row for row in rows_for(build(recording), "A") if row["datetime"] == restart]
 
-	assert [row["position"] for row in rows] == [Layout.UNDEFINED] * 2
+	assert [(row["antenna"], row["position"]) for row in rows] == [("1", Layout.UNDEFINED)]
 
 
 def test_a_stop_before_the_window_changes_nothing_inside_it():

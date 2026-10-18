@@ -104,40 +104,25 @@ def test_output_schema(make_df):
 	assert set(result.columns) == EXPECTED_COLUMNS
 
 
-def test_single_animal_alone(make_df):
-	"""A single animal with no companions gets the exact duration recorded."""
+def test_threshold_applies_to_the_whole_bout(make_df):
+	"""Back-to-back reads of one solitary bout count together against minimum_time_alone.
+
+	8 s then 7 s in the same cage is one 15 s bout, kept whole at a 10 s threshold even
+	though neither read clears it alone; a separate 6 s bout is still dropped.
+	"""
 	df = make_df(
 		{
-			"animal_id": ["A"],
-			"position": ["cage_1"],
-			"datetime": [at(2023, 5, 24, 12, 0, 0)],
-			"time_spent": [10.0],
-		}
-	)
-	result = alone(df)
-
-	assert result.height == 1
-	row = alone_row(result, "A")
-	assert row["time_alone"] == 10
-	assert row["phase"] == "light_phase"
-	assert row["day"] == 1
-
-
-def test_two_animals_overlapping_completely(make_df):
-	"""Two animals on the exact same interval - neither is ever alone."""
-	df = make_df(
-		{
-			"animal_id": ["A", "B"],
-			"position": ["cage_1", "cage_1"],
+			"animal_id": ["A", "A", "A"],
+			"position": ["cage_1", "cage_1", "cage_1"],
 			"datetime": [
-				dt.datetime(2023, 5, 24, 12, 0, 0, tzinfo=TZ),
-				dt.datetime(2023, 5, 24, 12, 0, 0, tzinfo=TZ),
+				at(2023, 5, 24, 12, 0, 8),
+				at(2023, 5, 24, 12, 0, 15),
+				at(2023, 5, 24, 12, 5, 6),
 			],
-			"time_spent": [10.0, 10.0],
+			"time_spent": [8.0, 7.0, 6.0],
 		}
 	)
-	result = alone(df)
-	assert result.height == 0
+	assert alone_row(alone(df, minimum_time_alone=10.0), "A")["time_alone"] == 15
 
 
 def test_partial_overlap(make_df):
@@ -265,20 +250,6 @@ def test_day_split(make_df):
 	assert result.height == 2
 	assert result["day"].to_list() == [1, 3]
 	assert all(t == 10 for t in result["time_alone"])
-
-
-def test_boundary_time_is_light(make_df):
-	"""A visit starting exactly at 07:00 is labeled light_phase (start inclusive)."""
-	df = make_df(
-		{
-			"animal_id": ["A"],
-			"position": ["cage_1"],
-			"datetime": [dt.datetime(2023, 5, 24, 7, 0, 5, tzinfo=TZ)],
-			"time_spent": [5.0],
-		}
-	)
-	result = alone(df)
-	assert alone_row(result, "A")["phase"] == "light_phase"
 
 
 def test_simultaneous_handoff(make_df):

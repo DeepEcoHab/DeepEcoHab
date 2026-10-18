@@ -71,7 +71,11 @@ def build_main_df(recording: Recording, params: AnalysisParams) -> pl.LazyFrame:
 	start, end = recording.timeline.local_span
 
 	return (
-		recording.data.sort("datetime")
+		# One animal cannot be read at two antennas in the same instant; the first read in
+		# file order is kept, so (datetime, animal_id) is unique and the row order -
+		# padded_df's row_id - is the same on every run.
+		recording.data.unique(["animal_id", "datetime"], keep="first", maintain_order=True)
+		.sort("datetime", maintain_order=True)
 		# Trailing data out first, so the extrapolation anchors on the window and not on it.
 		.filter(pl.col("datetime") <= end)
 		.pipe(transforms.with_segments, recording.boundaries)
@@ -108,21 +112,29 @@ def build_main_df(recording: Recording, params: AnalysisParams) -> pl.LazyFrame:
 		)
 		.pipe(grids.assign_phase_count, recording)
 		.drop("__undefined", "__segment", "__label")
-		# animal_id breaks datetime ties, so the row order - padded_df's row_id - is
-		# the same on every run.
 		.sort("datetime", "animal_id")
 	)
 
 
+@DataFrameRegistry.register("time_grid")
+def build_time_grid(recording: Recording, params: AnalysisParams) -> pl.LazyFrame:
+	"""Frame of every cell the recording's tables are binned into.
+
+	``chasings_df`` and ``pairwise_meetings`` store only the cells something happened
+	in, so a reader averaging over cells zero-fills them against this.
+	"""
+	return grids.build_time_grid(recording)
+
+
 @DataFrameRegistry.register("padded_df", requires=["main_df"])
 def build_padded_df(recording: Recording, params: AnalysisParams) -> pl.LazyFrame:
-	"""Frame of ``main_df`` visits cut at every wall-clock minute boundary.
+	"""Frame of ``main_df`` visits cut wherever a cell of the time grid begins.
 
-	Occupancy has to be attributed to the minute it happened in, so a visit spanning
-	several minutes is split into one piece per minute. Tables that measure time
-	rather than events read this instead of ``main_df``.
+	Occupancy has to be attributed to the hour, phase and day it happened in, so a
+	visit spanning several cells is split into one piece per cell. Tables that measure
+	time rather than events read this instead of ``main_df``.
 	"""
-	pieces = transforms.split_on_minute_boundaries(recording.load_results("main_df"), recording)
+	pieces = transforms.split_visits_on_cells(recording.load_results("main_df"), recording)
 
 	# A piece is dated by its own start, not by the end of the visit it came from, so
 	# the phase_count inherited from that visit no longer applies. Every piece starts

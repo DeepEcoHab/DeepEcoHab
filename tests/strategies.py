@@ -103,7 +103,7 @@ def seconds(values: list[float]) -> pl.Series:
 
 
 def padding_frame(rows: list[dict], tz: str) -> pl.LazyFrame:
-	"""Frame shaped for transforms.split_on_minute_boundaries, one row per visit."""
+	"""Frame shaped for transforms.split_visits_on_cells, one row per visit."""
 	return pl.LazyFrame(
 		{
 			"animal_id": pl.Series([r["animal_id"] for r in rows], dtype=pl.Enum(ANIMALS)),
@@ -297,7 +297,8 @@ def make_layout(antenna_combinations: dict[str, str], tunnels_map: dict[str, str
 	once as antenna pairs and gets a consistent layout back. A pair resolving to a
 	directional tunnel the given ``tunnels_map`` does not name is dropped rather than
 	carried: the Layout validator rejects such a position, and a test drawing a partial
-	tunnels_map is asking for the smaller habitat, not a broken one.
+	tunnels_map is asking for the smaller habitat, not a broken one. Cages the tunnels
+	cannot reach are left out the same way, as the validator wants one connected habitat.
 	"""
 	antenna_combinations = {
 		pair: position
@@ -306,6 +307,13 @@ def make_layout(antenna_combinations: dict[str, str], tunnels_map: dict[str, str
 	}
 	cage_names = sorted({pos for pos in antenna_combinations.values() if "cage" in pos})
 	tunnel_names = sorted(set(tunnels_map.values()))
+	# A habitat is one piece, so the tunnels reach only as many cages as they can chain.
+	cage_names = cage_names[: len(tunnel_names) + 1]
+	antenna_combinations = {
+		pair: position
+		for pair, position in antenna_combinations.items()
+		if position in cage_names or position in tunnels_map
+	}
 
 	return Layout(
 		cages=[
@@ -316,8 +324,10 @@ def make_layout(antenna_combinations: dict[str, str], tunnels_map: dict[str, str
 			Tunnel(
 				name=name,
 				tunnel_no=index,
-				start_cell_id=f"C{index}",
-				end_cell_id=f"C{index + 1}",
+				# Round the cages and back to the first: a chain when there is one tunnel fewer
+				# than cages, a ring when as many.
+				start_cell_id=f"C{(index - 1) % len(cage_names) + 1}",
+				end_cell_id=f"C{index % len(cage_names) + 1}",
 				antennas=[],
 			)
 			for index, name in enumerate(tunnel_names, start=1)
@@ -611,7 +621,7 @@ def padded_df_frame(rows: list[dict], recording: Recording) -> pl.LazyFrame:
 	Each row needs ``animal_id``, ``position`` (undirected or cage), ``datetime``
 	(the interval END, tz-aware) and ``time_spent`` in seconds; ``interpolated``
 	defaults to False. The calendar columns are derived from the piece's START, as
-	``split_on_minute_boundaries`` derives them via ``__piece_start`` - a piece belongs
+	``split_on_cell_boundaries`` derives them from the piece start - a piece belongs
 	to the bin it began in, so a fixture that crosses a boundary has to agree.
 
 	With no rows, an empty frame carrying the full typed schema is returned, as

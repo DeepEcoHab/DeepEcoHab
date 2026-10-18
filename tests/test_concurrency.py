@@ -1,8 +1,8 @@
 """Tests for analysing several recordings at once.
 
 Recordings share nothing - their own results/ directory, a step graph that is read-only
-once imported - so the outer loop of the pipeline is run concurrently. These tests pin
-what that must not cost: the same tables as a serial run, every step still produced and
+once imported - so their steps, and a recording's independent steps, run concurrently. These tests
+pin what that must not cost: the same tables as a serial run, every step still produced and
 reported exactly once, and a failure that neither hides nor strands the other recordings.
 """
 
@@ -88,9 +88,15 @@ def test_event_stream_covers_every_step(tmp_path, sources):
 	assert {(event.recording, event.step) for event in events} == {
 		(name, step) for name, *_ in RECORDINGS for step in steps
 	}
-	# Within one recording the steps still arrive in dependency order.
+	# Within one recording a step never arrives before a step it requires, and the
+	# index counts that recording's finished steps.
 	for name, *_ in RECORDINGS:
-		assert [e.step for e in events if e.recording == name] == steps
+		arrived = [e.step for e in events if e.recording == name]
+		for position, step in enumerate(arrived):
+			assert set(DataFrameRegistry._requires[step]) <= set(arrived[:position])
+		assert [e.step_index for e in events if e.recording == name] == list(
+			range(1, len(steps) + 1)
+		)
 
 	project.close()
 

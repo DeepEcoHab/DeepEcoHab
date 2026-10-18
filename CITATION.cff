@@ -1,0 +1,48 @@
+cff-version: 1.2.0
+message: "If you use DeepEcoHab in published work, please cite it as below, together with the paper introducing the Eco-HAB system."
+type: software
+title: "DeepEcoHab: fast and intuitive data analysis platform for EcoHab experiments"
+version: 0.6.1
+license: MIT
+repository-code: "https://github.com/DeepEcoHab/DeepEcoHab"
+url: "https://deepecohab.github.io/DeepEcoHab/"
+authors:
+  - family-names: Danielewski
+    given-names: Konrad
+    affiliation: "Nencki Institute of Experimental Biology, Polish Academy of Sciences"
+  - family-names: Włodkowska
+    given-names: Ula
+    affiliation: "Nencki Institute of Experimental Biology, Polish Academy of Sciences"
+  - family-names: Lipiec
+    given-names: Marcin
+    affiliation: "Nencki Institute of Experimental Biology, Polish Academy of Sciences"
+  - family-names: Knapska
+    given-names: Ewelina
+    affiliation: "Nencki Institute of Experimental Biology, Polish Academy of Sciences"
+references:
+  - type: article
+    title: "Eco-HAB as a fully automated and ecologically relevant assessment of social impairments in mouse models of autism"
+    authors:
+      - family-names: Puscian
+        given-names: Alicja
+      - family-names: Leski
+        given-names: Szymon
+      - family-names: Kasprowicz
+        given-names: Grzegorz
+      - family-names: Winiarski
+        given-names: Maciej
+      - family-names: Borowska
+        given-names: Joanna
+      - family-names: Nikolaev
+        given-names: Tomasz
+      - family-names: Boguszewski
+        given-names: Pawel M.
+      - family-names: Lipp
+        given-names: Hans-Peter
+      - family-names: Knapska
+        given-names: Ewelina
+    journal: eLife
+    volume: 5
+    start: e19532
+    year: 2016
+    doi: "10.7554/eLife.19532"
