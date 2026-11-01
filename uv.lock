@@ -377,6 +377,7 @@ dev = [
     { name = "hypothesis" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
+    { name = "jupyter-book" },
     { name = "nbformat" },
     { name = "orjson" },
     { name = "packaging" },
@@ -403,7 +404,7 @@ test = [
 requires-dist = [
     { name = "dash", marker = "extra == 'app'", specifier = ">=4" },
     { name = "dash-mantine-components", marker = "extra == 'app'", specifier = ">=2.8.0" },
-    { name = "deepecohab", extras = ["app", "notebook", "test"], marker = "extra == 'dev'" },
+    { name = "deepecohab", extras = ["app", "notebook", "test", "docs"], marker = "extra == 'dev'" },
     { name = "diskcache", marker = "extra == 'app'" },
     { name = "hypothesis", marker = "extra == 'test'" },
     { name = "ipykernel", marker = "extra == 'notebook'" },
