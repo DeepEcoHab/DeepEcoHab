@@ -72,7 +72,7 @@ dependencies = [
     ]
 
     dev = [
-        "deepecohab[app,notebook,test]",
+        "deepecohab[app,notebook,test,docs]",
         "ruff>=0.15.17",
         "ty>=0.0.50",
         "pre-commit",
