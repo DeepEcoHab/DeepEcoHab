@@ -12,6 +12,10 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      python-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
     labels:
       - "dependencies"
 
