@@ -60,7 +60,7 @@ def _layout() -> dmc.MantineProvider:
 		theme={  # ty: ignore[invalid-argument-type]
 			"primaryColor": "accent",
 			"primaryShade": {"light": 6, "dark": 4},
-			"colors": {"accent": _ACCENT},  # ty: ignore[invalid-argument-type]
+			"colors": {"accent": _ACCENT},
 			"fontFamily": "Geist, Segoe UI, system-ui, sans-serif",
 			"fontFamilyMonospace": "Geist Mono, ui-monospace, Cascadia Mono, Consolas, monospace",
 			"fontSizes": {"xs": "12px", "sm": "13px", "md": "14px", "lg": "16px", "xl": "20px"},
